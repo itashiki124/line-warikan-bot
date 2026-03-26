@@ -21,8 +21,16 @@ logger = logging.getLogger(__name__)
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
+LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 app = FastAPI(title="LINE 割り勘Bot")
+
+
+def _line_headers() -> dict:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+    }
 
 
 def verify_signature(body: bytes, signature: str) -> bool:
@@ -38,18 +46,35 @@ def verify_signature(body: bytes, signature: str) -> bool:
 
 async def reply_message(reply_token: str, text: str) -> None:
     """LINE Reply API でメッセージを送信する"""
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
-    }
     payload = {
         "replyToken": reply_token,
         "messages": [{"type": "text", "text": text}],
     }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(LINE_REPLY_URL, json=payload, headers=headers)
-        logger.info("LINE API response: status=%d body=%s", resp.status_code, resp.text)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(LINE_REPLY_URL, json=payload, headers=_line_headers())
+        logger.info("LINE Reply API: status=%d body=%s", resp.status_code, resp.text)
         resp.raise_for_status()
+
+
+async def push_message(to: str, text: str) -> None:
+    """LINE Push API でメッセージを送信する (Reply失敗時のフォールバック)"""
+    payload = {
+        "to": to,
+        "messages": [{"type": "text", "text": text}],
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(LINE_PUSH_URL, json=payload, headers=_line_headers())
+        logger.info("LINE Push API: status=%d body=%s", resp.status_code, resp.text)
+        resp.raise_for_status()
+
+
+def _get_reply_target(source: dict) -> str:
+    """Push API 用の送信先IDを取得する"""
+    return (
+        source.get("groupId")
+        or source.get("roomId")
+        or source.get("userId", "")
+    )
 
 
 @app.get("/health")
@@ -90,9 +115,24 @@ async def webhook(request: Request) -> JSONResponse:
         logger.info("Processing message: %r from group %s", text, group_id)
         try:
             response_text = handle_text(text, group_id)
+        except Exception as e:
+            logger.error("Failed to handle message: %s", e, exc_info=True)
+            response_text = "エラーが発生しました。もう一度お試しください。"
+
+        # Reply API で送信、失敗時は Push API にフォールバック
+        try:
             await reply_message(reply_token, response_text)
             logger.info("Reply sent successfully")
         except Exception as e:
-            logger.error("Failed to handle event: %s", e, exc_info=True)
+            logger.warning("Reply API failed: %s — falling back to Push API", e)
+            try:
+                push_to = _get_reply_target(source)
+                if push_to:
+                    await push_message(push_to, response_text)
+                    logger.info("Push message sent successfully")
+                else:
+                    logger.error("No push target available")
+            except Exception as e2:
+                logger.error("Push API also failed: %s", e2, exc_info=True)
 
     return JSONResponse({"status": "ok"})

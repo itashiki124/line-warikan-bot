@@ -1,4 +1,6 @@
 """グループセッションのインメモリストレージ"""
+from typing import Optional
+
 from app.warikan import GroupSession
 
 # group_id -> GroupSession
@@ -19,7 +21,7 @@ def reset_session(group_id: str) -> None:
     _people.pop(group_id, None)
 
 
-def get_people(group_id: str) -> int | None:
+def get_people(group_id: str) -> Optional[int]:
     return _people.get(group_id)
 
 
