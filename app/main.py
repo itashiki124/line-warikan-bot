@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import base64
 import json
+import logging
 import os
 
 from fastapi import FastAPI, Request, HTTPException
@@ -13,6 +14,9 @@ from dotenv import load_dotenv
 from app.line_handler import handle_text
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
@@ -58,9 +62,11 @@ async def webhook(request: Request) -> JSONResponse:
     signature = request.headers.get("X-Line-Signature", "")
 
     if not verify_signature(body, signature):
+        logger.warning("Invalid signature received")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     data = json.loads(body)
+    logger.info("Webhook received: %d events", len(data.get("events", [])))
 
     for event in data.get("events", []):
         if event.get("type") != "message":
@@ -80,7 +86,12 @@ async def webhook(request: Request) -> JSONResponse:
             or source.get("userId", "default")
         )
 
-        response_text = handle_text(text, group_id)
-        await reply_message(reply_token, response_text)
+        logger.info("Processing message: %r from group %s", text, group_id)
+        try:
+            response_text = handle_text(text, group_id)
+            await reply_message(reply_token, response_text)
+            logger.info("Reply sent successfully")
+        except Exception as e:
+            logger.error("Failed to handle event: %s", e, exc_info=True)
 
     return JSONResponse({"status": "ok"})
