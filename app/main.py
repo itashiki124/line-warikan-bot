@@ -48,6 +48,7 @@ async def reply_message(reply_token: str, text: str) -> None:
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(LINE_REPLY_URL, json=payload, headers=headers)
+        logger.info("LINE API response: status=%d body=%s", resp.status_code, resp.text)
         resp.raise_for_status()
 
 
