@@ -18,7 +18,8 @@ def _get_api_key() -> str:
     return os.environ.get("OPENAI_API_KEY", "")
 
 SYSTEM_PROMPT = """\
-あなたはLINEグループの割り勘Botのメッセージ解析器です。
+あなたは割り勘計算専門のアシスタントです。ユーザーのメッセージから金額、人数、参加者名、支払い者などの割り勘に関する情報を抽出してください。割り勘と関係ない話題の場合は、割り勘Botであることを伝えて、割り勘の使い方を案内してください。
+
 ユーザーのメッセージを解析し、以下のいずれかのアクションとして分類してJSON形式で返してください。
 
 ## アクション一覧
@@ -129,9 +130,19 @@ async def chat_with_ai(text: str) -> Optional[str]:
 
     try:
         client = AsyncOpenAI(api_key=api_key)
+        chat_system_prompt = (
+            "あなたはLINEグループで使われる割り勘計算Botです。名前は「割り勘Bot」です。"
+            "割り勘に関する質問には丁寧に答えてください。"
+            "割り勘と関係ない話題が来た場合は、「割り勘Botなので割り勘のお手伝いをさせてください！」と伝えて、"
+            "使い方の例を簡潔に案内してください。例：「3000円 3人」「ランチ1500円を記録」「精算」など。"
+            "長文は避けて、短く簡潔に応答してください。"
+        )
         response = await client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": text}],
+            messages=[
+                {"role": "system", "content": chat_system_prompt},
+                {"role": "user", "content": text},
+            ],
             temperature=0.7,
             max_tokens=256,
         )
