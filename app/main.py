@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 import httpx
 from dotenv import load_dotenv
 
-from app.line_handler import handle_text
+from app.line_handler import handle_text, BotResponse
 
 load_dotenv()
 
@@ -52,11 +52,11 @@ def verify_signature(body: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
-async def reply_message(reply_token: str, text: str) -> None:
+async def reply_message(reply_token: str, response: BotResponse) -> None:
     """LINE Reply API でメッセージを送信する"""
     payload = {
         "replyToken": reply_token,
-        "messages": [{"type": "text", "text": text}],
+        "messages": [response.to_line_message()],
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(LINE_REPLY_URL, json=payload, headers=_line_headers())
@@ -64,11 +64,11 @@ async def reply_message(reply_token: str, text: str) -> None:
         resp.raise_for_status()
 
 
-async def push_message(to: str, text: str) -> None:
+async def push_message(to: str, response: BotResponse) -> None:
     """LINE Push API でメッセージを送信する (Reply失敗時のフォールバック)"""
     payload = {
         "to": to,
-        "messages": [{"type": "text", "text": text}],
+        "messages": [response.to_line_message()],
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(LINE_PUSH_URL, json=payload, headers=_line_headers())
@@ -150,21 +150,21 @@ async def webhook(request: Request) -> JSONResponse:
 
         logger.info("Processing message: %r from group %s", text, group_id)
         try:
-            response_text = await handle_text(text, group_id)
+            response = await handle_text(text, group_id)
         except Exception as e:
             logger.error("Failed to handle message: %s", e, exc_info=True)
-            response_text = "エラーが発生しました。もう一度お試しください。"
+            response = BotResponse("エラーが発生しました。もう一度お試しください。")
 
         # Reply API で送信、失敗時は Push API にフォールバック
         try:
-            await reply_message(reply_token, response_text)
+            await reply_message(reply_token, response)
             logger.info("Reply sent successfully")
         except Exception as e:
             logger.warning("Reply API failed: %s — falling back to Push API", e)
             try:
                 push_to = _get_reply_target(source)
                 if push_to:
-                    await push_message(push_to, response_text)
+                    await push_message(push_to, response)
                     logger.info("Push message sent successfully")
                 else:
                     logger.error("No push target available")

@@ -273,19 +273,19 @@ class TestHandleTextRegex:
     async def test_help(self):
         from app.line_handler import handle_text
         result = await handle_text("ヘルプ", "test-group")
-        assert "割り勘Bot" in result
+        assert "割り勘Bot" in result.text
 
     @pytest.mark.asyncio
     async def test_reset(self):
         from app.line_handler import handle_text
         result = await handle_text("リセット", "test-group")
-        assert "リセット" in result
+        assert "リセット" in result.text
 
     @pytest.mark.asyncio
     async def test_warikan_basic(self):
         from app.line_handler import handle_text
         result = await handle_text("3000円 3人", "test-group")
-        assert "1,000円" in result
+        assert "1,000円" in result.text
 
     @pytest.mark.asyncio
     async def test_record_shows_status(self):
@@ -294,8 +294,8 @@ class TestHandleTextRegex:
         from app.storage import set_people
         set_people("test-group", 3)
         result = await handle_text("記録 1500円 ランチ", "test-group")
-        assert "1,500円" in result
-        assert "現在:" in result
+        assert "1,500円" in result.text
+        assert "現在:" in result.text
 
     @pytest.mark.asyncio
     async def test_settle(self):
@@ -305,7 +305,7 @@ class TestHandleTextRegex:
         session = get_session("test-group")
         session.add_payment(2000, "ランチ", None)
         result = await handle_text("精算", "test-group")
-        assert "精算結果" in result
+        assert "精算結果" in result.text
 
 
 class TestCalculateSettlement:
