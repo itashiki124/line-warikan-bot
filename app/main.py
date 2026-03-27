@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import sys
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -17,6 +18,13 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 環境変数の診断ログ
+logger.info("Starting LINE 割り勘Bot...")
+logger.info("Python version: %s", sys.version)
+logger.info("OPENAI_API_KEY: %s", "SET" if os.environ.get("OPENAI_API_KEY") else "NOT SET")
+logger.info("LINE_CHANNEL_SECRET: %s", "SET" if os.environ.get("LINE_CHANNEL_SECRET") else "NOT SET")
+logger.info("LINE_CHANNEL_ACCESS_TOKEN: %s", "SET" if os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") else "NOT SET")
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
@@ -82,6 +90,7 @@ async def health() -> JSONResponse:
     from app.ai_parser import _get_api_key
     return JSONResponse({
         "status": "ok",
+        "python": sys.version,
         "ai_enabled": bool(_get_api_key()),
     })
 
@@ -89,14 +98,14 @@ async def health() -> JSONResponse:
 @app.get("/test-ai")
 async def test_ai() -> JSONResponse:
     """AI パースの動作確認用エンドポイント"""
-    from app.ai_parser import parse_with_ai, _get_api_key, GEMINI_MODEL
+    from app.ai_parser import parse_with_ai, _get_api_key
     api_key = _get_api_key()
     if not api_key:
-        return JSONResponse({"error": "GEMINI_API_KEY is not set", "key_length": 0})
+        return JSONResponse({"error": "OPENAI_API_KEY is not set", "key_length": 0})
     try:
         result = await parse_with_ai("ランチ1500円")
         return JSONResponse({
-            "model": GEMINI_MODEL,
+            "model": "gpt-4o-mini",
             "key_length": len(api_key),
             "result": result.__dict__ if result else None,
         })

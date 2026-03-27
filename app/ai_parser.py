@@ -132,7 +132,7 @@ async def parse_with_ai(
         return None
 
     try:
-        client = AsyncOpenAI(api_key=api_key)
+        client = AsyncOpenAI(api_key=api_key, timeout=15.0)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
@@ -197,7 +197,7 @@ async def chat_with_ai(text: str, session_info: Optional[dict] = None) -> Option
         return None
 
     try:
-        client = AsyncOpenAI(api_key=api_key)
+        client = AsyncOpenAI(api_key=api_key, timeout=15.0)
         messages = [
             {"role": "system", "content": CHAT_SYSTEM_PROMPT},
         ]
