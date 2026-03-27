@@ -505,3 +505,264 @@ class TestWarikanWizard:
 
         result = await handle_text("3", "test-group")
         assert "2,000円" in result.text
+
+
+class TestLIFF:
+    """LIFF (入力フォーム) 関連のテスト"""
+
+    def test_liff_url_generation(self):
+        """LIFF URLが正しく組み立てられる"""
+        from app.line_handler import _liff_url
+        url = _liff_url("record_form.html", "1234-abcd")
+        assert "https://liff.line.me/1234-abcd/static/record_form.html" in url
+        assert "liffId=1234-abcd" in url
+
+    def test_liff_url_with_members(self):
+        """membersパラメータ付きのLIFF URL"""
+        from app.line_handler import _liff_url
+        url = _liff_url("record_form.html", "1234-abcd", members="田中,山田")
+        assert "members=" in url
+
+    def test_qr_main_with_liff(self):
+        """LIFF有効時、QRメインにURIアクションが含まれる"""
+        from app.line_handler import _build_qr_main
+        qrs = _build_qr_main(liff_id="test-liff-id", members=["田中", "山田"])
+        uri_items = [qr for qr in qrs if qr.uri]
+        assert len(uri_items) >= 3  # 支払い記録, 割り勘, メンバー登録
+
+    def test_qr_main_without_liff(self):
+        """LIFF未設定時、QRメインはテキストアクションのみ"""
+        from app.line_handler import _build_qr_main
+        qrs = _build_qr_main(liff_id="", members=[])
+        assert all(qr.text for qr in qrs)
+        assert not any(qr.uri for qr in qrs)
+
+    def test_to_line_message_uri_action(self):
+        """URIアクション付きQuickReplyがLINE形式に変換される"""
+        from app.line_handler import BotResponse, QuickReplyItem
+        resp = BotResponse(
+            "テスト",
+            [QuickReplyItem("📝 記録", uri="https://liff.line.me/xxx/static/record_form.html")],
+        )
+        msg = resp.to_line_message()
+        action = msg["quickReply"]["items"][0]["action"]
+        assert action["type"] == "uri"
+        assert action["uri"].startswith("https://liff.line.me/")
+
+    def test_to_line_message_text_action(self):
+        """テキストアクション付きQuickReplyがLINE形式に変換される"""
+        from app.line_handler import BotResponse, QuickReplyItem
+        resp = BotResponse("テスト", [QuickReplyItem("❓ ヘルプ", text="ヘルプ")])
+        msg = resp.to_line_message()
+        action = msg["quickReply"]["items"][0]["action"]
+        assert action["type"] == "message"
+        assert action["text"] == "ヘルプ"
+
+    @pytest.mark.asyncio
+    async def test_handle_text_with_liff_id(self):
+        """liff_id指定時、レスポンスのQRにURIアクションが含まれる"""
+        from app.line_handler import handle_text
+        from app.storage import _sessions, _people, _wizards
+        _sessions.clear()
+        _people.clear()
+        _wizards.clear()
+
+        result = await handle_text("ヘルプ", "test-group", liff_id="test-liff-id")
+        uri_items = [qr for qr in result.quick_replies if qr.uri]
+        assert len(uri_items) >= 1
+
+    def test_qr_after_record_with_liff(self):
+        """LIFF有効時、記録後QRにURIアクションが含まれる"""
+        from app.line_handler import _build_qr_after_record
+        qrs = _build_qr_after_record(liff_id="test-liff-id", members=["田中"])
+        assert any(qr.uri for qr in qrs)
+        assert any("record_form" in qr.uri for qr in qrs if qr.uri)
+
+
+class TestNaturalRecordParsing:
+    """旅行中のカジュアル入力パースのテスト"""
+
+    def test_with_yen(self):
+        """「ランチ1500円」→ 基本パターン"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("ランチ1500円")
+        assert result == (1500, "ランチ", None)
+
+    def test_with_payer_and_yen(self):
+        """「田中がランチ1500円払った」"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("田中がランチ1500円払った")
+        assert result == (1500, "ランチ", "田中")
+
+    def test_without_yen(self):
+        """「コンビニ 800」→ 円なしでもパース"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("コンビニ 800")
+        assert result is not None
+        assert result[0] == 800
+        assert result[1] == "コンビニ"
+
+    def test_amount_then_payer(self):
+        """「3000円 田中」→ 金額+支払者"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("3000円 田中")
+        assert result is not None
+        assert result[0] == 3000
+        assert result[2] == "田中"
+
+    def test_taxi_amount(self):
+        """「タクシー 3000」"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("タクシー 3000")
+        assert result is not None
+        assert result[0] == 3000
+        assert "タクシー" in result[1]
+
+    def test_suffix_datta(self):
+        """「タクシー2500円だった」→ 末尾のノイズを除去"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("タクシー2500円だった")
+        assert result is not None
+        assert result[0] == 2500
+
+    def test_kanji_amount_man(self):
+        """「ホテル1万5千円」→ 漢数字"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("ホテル1万5千円")
+        assert result is not None
+        assert result[0] == 15000
+
+    def test_kanji_amount_sen(self):
+        """「3千円」→ 千の漢数字"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("タクシー3千円")
+        assert result is not None
+        assert result[0] == 3000
+
+    def test_participants_extraction(self):
+        """「タクシー3000円 田中と山田で」→ 対象者抽出"""
+        from app.warikan import parse_natural_record_extended
+        result = parse_natural_record_extended("タクシー3000円 田中と山田で")
+        assert result is not None
+        assert result.amount == 3000
+        assert result.participants is not None
+        assert "田中" in result.participants
+        assert "山田" in result.participants
+
+    def test_hotel_no_yen(self):
+        """「ホテル代 50000」"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("ホテル代 50000")
+        assert result is not None
+        assert result[0] == 50000
+
+    def test_ignore_keywords(self):
+        """「メンバー 3」はパースしない（キーワード除外）"""
+        from app.warikan import parse_natural_record_message
+        result = parse_natural_record_message("メンバー 3")
+        assert result is None
+
+
+class TestAutoMemberRegistration:
+    """支払い記録から自動メンバー登録のテスト"""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from app.storage import _sessions, _people, _wizards
+        _sessions.clear()
+        _people.clear()
+        _wizards.clear()
+
+    @pytest.mark.asyncio
+    async def test_payer_auto_registered(self):
+        """支払者が自動でメンバーに追加される"""
+        from app.line_handler import handle_text
+        from app.storage import get_session
+
+        result = await handle_text("田中がランチ1500円払った", "test-group")
+        assert "記録" in result.text
+        session = get_session("test-group")
+        assert "田中" in session.members
+
+    @pytest.mark.asyncio
+    async def test_multiple_payments_accumulate_members(self):
+        """複数の支払い記録でメンバーが蓄積される"""
+        from app.line_handler import handle_text
+        from app.storage import get_session
+
+        await handle_text("田中がランチ1500円払った", "test-group")
+        await handle_text("山田がタクシー3000円払った", "test-group")
+        session = get_session("test-group")
+        assert "田中" in session.members
+        assert "山田" in session.members
+
+    @pytest.mark.asyncio
+    async def test_no_duplicate_members(self):
+        """同じ名前は重複登録されない"""
+        from app.line_handler import handle_text
+        from app.storage import get_session
+
+        await handle_text("田中がランチ1500円払った", "test-group")
+        await handle_text("田中がカフェ800円払った", "test-group")
+        session = get_session("test-group")
+        assert session.members.count("田中") == 1
+
+
+class TestTravelScenario:
+    """旅行シナリオの統合テスト"""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from app.storage import _sessions, _people, _wizards
+        _sessions.clear()
+        _people.clear()
+        _wizards.clear()
+
+    @pytest.mark.asyncio
+    async def test_full_travel_flow(self):
+        """旅行中の一連の支払い→精算フロー"""
+        from app.line_handler import handle_text
+        from app.storage import get_session, get_people
+
+        # メンバー登録
+        r = await handle_text("メンバーは田中と山田と鈴木", "trip")
+        assert "3人" in r.text
+
+        # いくつかの支払いを記録
+        r = await handle_text("田中がランチ3000円払った", "trip")
+        assert "記録" in r.text
+
+        r = await handle_text("山田がタクシー2000円払った", "trip")
+        assert "記録" in r.text
+
+        # 状況確認
+        r = await handle_text("今いくら？", "trip")
+        assert "5,000円" in r.text
+
+        # 精算
+        r = await handle_text("精算して", "trip")
+        assert "精算" in r.text
+        assert "送金プラン" in r.text
+
+    @pytest.mark.asyncio
+    async def test_casual_input_no_yen(self):
+        """「コンビニ 800」のように円なしでも記録される"""
+        from app.line_handler import handle_text
+
+        r = await handle_text("コンビニ 800", "test-group")
+        assert "記録" in r.text
+        assert "800" in r.text
+
+    @pytest.mark.asyncio
+    async def test_settle_aliases(self):
+        """「計算して」「締めよう」でも精算できる"""
+        from app.line_handler import handle_text
+        from app.storage import get_session, set_people
+
+        session = get_session("test-group")
+        session.set_members(["田中", "山田"])
+        set_people("test-group", 2)
+        session.add_payment(1000, "ランチ", "田中")
+
+        r = await handle_text("計算して", "test-group")
+        assert "精算" in r.text

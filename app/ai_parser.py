@@ -13,9 +13,22 @@ from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
+_client: Optional[AsyncOpenAI] = None
+
 
 def _get_api_key() -> str:
     return os.environ.get("OPENAI_API_KEY", "")
+
+
+def _get_client() -> Optional[AsyncOpenAI]:
+    """OpenAI クライアントをキャッシュして再利用する"""
+    global _client
+    api_key = _get_api_key()
+    if not api_key:
+        return None
+    if _client is None:
+        _client = AsyncOpenAI(api_key=api_key, timeout=15.0)
+    return _client
 
 SYSTEM_PROMPT = """\
 あなたは割り勘計算専門のアシスタントです。ユーザーのメッセージから金額、人数、参加者名、支払い者などの割り勘に関する情報を抽出してください。割り勘と関係ない話題の場合は、割り勘Botであることを伝えて、割り勘の使い方を案内してください。
@@ -70,6 +83,10 @@ SYSTEM_PROMPT = """\
 - 「田中がランチ1500円払った、田中と山田の分」→ record (payer="田中", participants=["田中", "山田"])
 - 「タクシー3000円、山田と鈴木で割り勘」→ record (participants=["山田", "鈴木"])
 - 「田中と山田でタクシー代割り勘した、2000円」→ record (participants=["田中", "山田"])
+- 「コンビニ 800」→ record (amount=800, label="コンビニ")  ※円がなくても記録
+- 「3000 田中」「3000円 田中」→ record (amount=3000, payer="田中")
+- 「ホテル代 50000 全員分」→ record (amount=50000, label="ホテル代")
+- 「さっきのカフェ 田中が1200円」→ record (amount=1200, label="カフェ", payer="田中")
 - 「昨日の飲み 8000円 4人」「3人で割ると？12000円」→ warikan
 - 「田中と山田と鈴木で割り勘」→ members
 - 「3人でやる」「今日は5人」→ set_people
@@ -86,6 +103,9 @@ SYSTEM_PROMPT = """\
 - 割り勘・お金に関するメッセージなら、unknownにせず、適切なアクションかask/adviceにする
 - 情報が足りない場合はaskで自然な質問文を生成する
 - 曖昧でも最善の推測をする。確信が持てない場合はaskで確認する
+- 旅行中の急いだ入力を想定する。「円」がなくても数字があれば金額として扱う
+- 支払者名がメッセージに含まれていたら必ず payer に入れる
+- 対象者が全員でない場合は participants を必ず指定する
 - JSONのみを返し、それ以外のテキストは含めないこと
 """
 
@@ -126,13 +146,12 @@ async def parse_with_ai(
     session_info: Optional[dict] = None,
 ) -> Optional[AIParseResult]:
     """OpenAI GPT APIでメッセージを解析する。API未設定やエラー時はNoneを返す。"""
-    api_key = _get_api_key()
-    if not api_key:
+    client = _get_client()
+    if not client:
         logger.warning("OPENAI_API_KEY not set, skipping AI parsing")
         return None
 
     try:
-        client = AsyncOpenAI(api_key=api_key, timeout=15.0)
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
         ]
@@ -192,12 +211,11 @@ CHAT_SYSTEM_PROMPT = """\
 
 async def chat_with_ai(text: str, session_info: Optional[dict] = None) -> Optional[str]:
     """割り勘Botとしての会話応答。API未設定やエラー時はNoneを返す。"""
-    api_key = _get_api_key()
-    if not api_key:
+    client = _get_client()
+    if not client:
         return None
 
     try:
-        client = AsyncOpenAI(api_key=api_key, timeout=15.0)
         messages = [
             {"role": "system", "content": CHAT_SYSTEM_PROMPT},
         ]

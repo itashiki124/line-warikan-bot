@@ -9,6 +9,7 @@ from app.warikan import (
     parse_record_message,
     parse_member_message,
     parse_natural_record_message,
+    parse_natural_record_extended,
     GroupSession,
 )
 from app.storage import (
@@ -28,7 +29,8 @@ from app.ai_parser import parse_with_ai, chat_with_ai, AIParseResult
 class QuickReplyItem:
     """LINE Quick Reply ボタン1つ分"""
     label: str
-    text: str
+    text: str = ""
+    uri: str = ""  # URI action (LIFF) 用。text と排他。
 
 
 @dataclass
@@ -41,79 +43,145 @@ class BotResponse:
         """LINE Messaging API のメッセージオブジェクトに変換する"""
         msg: dict = {"type": "text", "text": self.text}
         if self.quick_replies:
-            msg["quickReply"] = {
-                "items": [
-                    {
+            items = []
+            for qr in self.quick_replies:
+                if qr.uri:
+                    items.append({
+                        "type": "action",
+                        "action": {
+                            "type": "uri",
+                            "label": qr.label,
+                            "uri": qr.uri,
+                        },
+                    })
+                else:
+                    items.append({
                         "type": "action",
                         "action": {
                             "type": "message",
                             "label": qr.label,
                             "text": qr.text,
                         },
-                    }
-                    for qr in self.quick_replies
-                ]
-            }
+                    })
+            msg["quickReply"] = {"items": items}
         return msg
 
 
 # ── クイックリプライのプリセット ──────────────────────
+# LIFF 設定時はフォーム入力欄を開く URI アクション、未設定時はテキスト送信（ウィザード）
 
-QR_MAIN = [
-    QuickReplyItem("💰 支払い記録", "記録"),
-    QuickReplyItem("� 割り勘計算", "割り勘"),
-    QuickReplyItem("�👥 メンバー登録", "メンバー登録"),
-    QuickReplyItem("📋 状況確認", "今いくら？"),
-    QuickReplyItem("💸 精算", "精算して"),
-    QuickReplyItem("❓ ヘルプ", "ヘルプ"),
-]
 
-QR_AFTER_RECORD = [
-    QuickReplyItem("➕ もう1件記録", "記録"),
-    QuickReplyItem("📋 状況確認", "今いくら？"),
-    QuickReplyItem("💸 精算", "精算して"),
-]
+def _liff_url(form: str, liff_id: str, **params: str) -> str:
+    """LIFFフォームのURLを組み立てる"""
+    from urllib.parse import urlencode, quote
+    base = f"https://liff.line.me/{liff_id}"
+    qs = {"liffId": liff_id}
+    qs.update(params)
+    return f"{base}/static/{form}?{urlencode(qs, quote_via=quote)}"
 
-QR_AFTER_MEMBERS = [
-    QuickReplyItem("💰 支払い記録", "記録"),
-    QuickReplyItem("📋 状況確認", "今いくら？"),
-]
 
-QR_STATUS = [
-    QuickReplyItem("💰 支払い記録", "記録"),
-    QuickReplyItem("💸 精算", "精算して"),
-    QuickReplyItem("🗑️ リセット", "リセット"),
-]
+def _build_qr_main(liff_id: str = "", members: Optional[list] = None) -> list[QuickReplyItem]:
+    members = members or []
+    if liff_id:
+        mp = ",".join(members)
+        return [
+            QuickReplyItem("💰 支払い記録", uri=_liff_url("record_form.html", liff_id, members=mp)),
+            QuickReplyItem("💴 割り勘計算", uri=_liff_url("warikan_form.html", liff_id)),
+            QuickReplyItem("👥 メンバー登録", uri=_liff_url("members_form.html", liff_id, members=mp)),
+            QuickReplyItem("📋 状況確認", text="今いくら？"),
+            QuickReplyItem("💸 精算", text="精算して"),
+            QuickReplyItem("❓ ヘルプ", text="ヘルプ"),
+        ]
+    return [
+        QuickReplyItem("💰 支払い記録", text="記録"),
+        QuickReplyItem("💴 割り勘計算", text="割り勘"),
+        QuickReplyItem("👥 メンバー登録", text="メンバー登録"),
+        QuickReplyItem("📋 状況確認", text="今いくら？"),
+        QuickReplyItem("💸 精算", text="精算して"),
+        QuickReplyItem("❓ ヘルプ", text="ヘルプ"),
+    ]
+
+
+def _build_qr_after_record(liff_id: str = "", members: Optional[list] = None) -> list[QuickReplyItem]:
+    members = members or []
+    if liff_id:
+        mp = ",".join(members)
+        return [
+            QuickReplyItem("➕ もう1件記録", uri=_liff_url("record_form.html", liff_id, members=mp)),
+            QuickReplyItem("📋 状況確認", text="今いくら？"),
+            QuickReplyItem("💸 精算", text="精算して"),
+        ]
+    return [
+        QuickReplyItem("➕ もう1件記録", text="記録"),
+        QuickReplyItem("📋 状況確認", text="今いくら？"),
+        QuickReplyItem("💸 精算", text="精算して"),
+    ]
+
+
+def _build_qr_after_members(liff_id: str = "", members: Optional[list] = None) -> list[QuickReplyItem]:
+    members = members or []
+    if liff_id:
+        mp = ",".join(members)
+        return [
+            QuickReplyItem("💰 支払い記録", uri=_liff_url("record_form.html", liff_id, members=mp)),
+            QuickReplyItem("📋 状況確認", text="今いくら？"),
+        ]
+    return [
+        QuickReplyItem("💰 支払い記録", text="記録"),
+        QuickReplyItem("📋 状況確認", text="今いくら？"),
+    ]
+
+
+def _build_qr_status(liff_id: str = "", members: Optional[list] = None) -> list[QuickReplyItem]:
+    members = members or []
+    if liff_id:
+        mp = ",".join(members)
+        return [
+            QuickReplyItem("💰 支払い記録", uri=_liff_url("record_form.html", liff_id, members=mp)),
+            QuickReplyItem("💸 精算", text="精算して"),
+            QuickReplyItem("🗑️ リセット", text="リセット"),
+        ]
+    return [
+        QuickReplyItem("💰 支払い記録", text="記録"),
+        QuickReplyItem("💸 精算", text="精算して"),
+        QuickReplyItem("🗑️ リセット", text="リセット"),
+    ]
+
 
 QR_AFTER_SETTLE = [
-    QuickReplyItem("🗑️ リセット", "リセット"),
-    QuickReplyItem("📋 状況確認", "今いくら？"),
+    QuickReplyItem("🗑️ リセット", text="リセット"),
+    QuickReplyItem("📋 状況確認", text="今いくら？"),
 ]
 
 QR_AFTER_RESET = [
-    QuickReplyItem("👥 メンバー登録", "メンバー登録"),
-    QuickReplyItem("💰 支払い記録", "記録"),
-    QuickReplyItem("❓ ヘルプ", "ヘルプ"),
+    QuickReplyItem("👥 メンバー登録", text="メンバー登録"),
+    QuickReplyItem("💰 支払い記録", text="記録"),
+    QuickReplyItem("❓ ヘルプ", text="ヘルプ"),
 ]
 
 HELP_TEXT = """\
 💰 割り勘Bot の使い方
 
-自然な言葉でOK！例えば:
-  「昨日の飲み会8000円、4人」
+旅行中・食事中にそのまま投稿するだけ！
+
+【支払いの記録】適当でOK！
   「田中がランチ1500円払った」
-  「タクシー代2500円ね」
-  「今いくら？」
-  「清算して」
+  「タクシー 3000」
+  「コンビニ 800」
+  「3000円 田中」
+  「ホテル代50000」
 
-【一部のメンバーで割り勘】
-  「タクシー3000円、田中と山田で割り勘」
+【一部メンバーだけの支払い】
+  「タクシー3000円 田中と山田で」
 
-【メンバー登録】
+【メンバー登録】名前は自動登録もされます
   「メンバーは田中と山田と鈴木」
 
+【精算】旅行の最後に！
+  「精算して」→ 誰が誰にいくら払うか計算
+
 【その他】
-  リセット / ヘルプ
+  今いくら？ / リセット / ヘルプ
 """
 
 _PEOPLE_SET_PATTERN = re.compile(
@@ -128,7 +196,8 @@ _STATUS_PATTERN = re.compile(
 )
 
 _SETTLE_PATTERN = re.compile(
-    r"(?:精算|清算|せいさん|settle)(?:して|しよう|する|お願い)?[！!]?",
+    r"(?:精算|清算|せいさん|settle|計算|締め|しめ|まとめ)"
+    r"(?:して|しよう|する|お願い|て|よう)?[！!]?",
     re.IGNORECASE,
 )
 
@@ -149,7 +218,7 @@ def _start_record_wizard(group_id: str) -> BotResponse:
     return BotResponse(
         "💰 支払い記録\n\n"
         "① 金額を入力してください（数字のみでOK）",
-        [QuickReplyItem("❌ キャンセル", "キャンセル")],
+        [QuickReplyItem("❌ キャンセル", text="キャンセル")],
     )
 
 
@@ -159,7 +228,7 @@ def _start_warikan_wizard(group_id: str) -> BotResponse:
     return BotResponse(
         "💴 割り勘計算\n\n"
         "① 合計金額を入力してください",
-        [QuickReplyItem("❌ キャンセル", "キャンセル")],
+        [QuickReplyItem("❌ キャンセル", text="キャンセル")],
     )
 
 
@@ -184,7 +253,7 @@ def _parse_people_input(text: str) -> Optional[int]:
     return None
 
 
-def _handle_wizard(text: str, group_id: str) -> Optional[BotResponse]:
+def _handle_wizard(text: str, group_id: str, liff_id: str = "") -> Optional[BotResponse]:
     """ウィザード進行中ならステップを処理する。ウィザードがなければNone。"""
     wizard = get_wizard(group_id)
     if wizard is None:
@@ -195,23 +264,23 @@ def _handle_wizard(text: str, group_id: str) -> Optional[BotResponse]:
     # キャンセル
     if t in ("キャンセル", "やめる", "cancel", "戻る"):
         clear_wizard(group_id)
-        return BotResponse("❌ 入力をキャンセルしました。", QR_MAIN)
+        return BotResponse("❌ 入力をキャンセルしました。", _build_qr_main(liff_id, _get_members(group_id)))
 
     if wizard.wizard_type == "record":
-        return _handle_record_wizard(t, group_id, wizard)
+        return _handle_record_wizard(t, group_id, wizard, liff_id)
     elif wizard.wizard_type == "warikan":
-        return _handle_warikan_wizard(t, group_id, wizard)
+        return _handle_warikan_wizard(t, group_id, wizard, liff_id)
 
     clear_wizard(group_id)
     return None
 
 
 def _handle_record_wizard(
-    text: str, group_id: str, wizard: WizardState,
+    text: str, group_id: str, wizard: WizardState, liff_id: str = "",
 ) -> BotResponse:
     """支払い記録ウィザードのステップ処理"""
     session = get_session(group_id)
-    cancel_qr = QuickReplyItem("❌ キャンセル", "キャンセル")
+    cancel_qr = QuickReplyItem("❌ キャンセル", text="キャンセル")
 
     # ── Step 1: 金額 ──
     if wizard.step == "amount":
@@ -224,7 +293,7 @@ def _handle_record_wizard(
         wizard.data["amount"] = amount
         wizard.step = "label"
         set_wizard(group_id, wizard)
-        label_qrs = [QuickReplyItem(f"📝 {lb}", lb) for lb in _COMMON_LABELS]
+        label_qrs = [QuickReplyItem(f"📝 {lb}", text=lb) for lb in _COMMON_LABELS]
         label_qrs.append(cancel_qr)
         return BotResponse(
             f"💰 金額: {amount:,}円\n\n"
@@ -240,8 +309,8 @@ def _handle_record_wizard(
         payer_qrs: list[QuickReplyItem] = []
         if session.members:
             for name in session.members[:10]:
-                payer_qrs.append(QuickReplyItem(f"👤 {name}", name))
-        payer_qrs.append(QuickReplyItem("⏭️ スキップ", "スキップ"))
+                payer_qrs.append(QuickReplyItem(f"👤 {name}", text=name))
+        payer_qrs.append(QuickReplyItem("⏭️ スキップ", text="スキップ"))
         payer_qrs.append(cancel_qr)
         return BotResponse(
             f"💰 金額: {wizard.data['amount']:,}円\n"
@@ -260,10 +329,10 @@ def _handle_record_wizard(
             wizard.step = "participants"
             set_wizard(group_id, wizard)
             part_qrs: list[QuickReplyItem] = [
-                QuickReplyItem("👥 全員", "全員"),
+                QuickReplyItem("👥 全員", text="全員"),
             ]
             for name in session.members[:10]:
-                part_qrs.append(QuickReplyItem(f"👤 {name}", name))
+                part_qrs.append(QuickReplyItem(f"👤 {name}", text=name))
             part_qrs.append(cancel_qr)
             payer_display = payer or "未指定"
             return BotResponse(
@@ -275,7 +344,7 @@ def _handle_record_wizard(
             )
 
         # メンバー少ない or 未設定 → 完了
-        return _finish_record_wizard(group_id, wizard)
+        return _finish_record_wizard(group_id, wizard, liff_id)
 
     # ── Step 4: 対象者 ──
     if wizard.step == "participants":
@@ -286,13 +355,13 @@ def _handle_record_wizard(
             if names:
                 participants = names
         wizard.data["participants"] = participants
-        return _finish_record_wizard(group_id, wizard)
+        return _finish_record_wizard(group_id, wizard, liff_id)
 
     clear_wizard(group_id)
-    return BotResponse("⚠️ 予期しないエラーです。最初からやり直してください。", QR_MAIN)
+    return BotResponse("⚠️ 予期しないエラーです。最初からやり直してください。", _build_qr_main(liff_id, _get_members(group_id)))
 
 
-def _finish_record_wizard(group_id: str, wizard: WizardState) -> BotResponse:
+def _finish_record_wizard(group_id: str, wizard: WizardState, liff_id: str = "") -> BotResponse:
     """ウィザードのデータを使って支払い記録を確定する"""
     clear_wizard(group_id)
     amount = wizard.data["amount"]
@@ -300,14 +369,14 @@ def _finish_record_wizard(group_id: str, wizard: WizardState) -> BotResponse:
     payer = wizard.data.get("payer")
     participants = wizard.data.get("participants")
     result_text = _do_record(group_id, amount, label, payer, participants)
-    return BotResponse(result_text, QR_AFTER_RECORD)
+    return BotResponse(result_text, _build_qr_after_record(liff_id, _get_members(group_id)))
 
 
 def _handle_warikan_wizard(
-    text: str, group_id: str, wizard: WizardState,
+    text: str, group_id: str, wizard: WizardState, liff_id: str = "",
 ) -> BotResponse:
     """即時割り勘ウィザードのステップ処理"""
-    cancel_qr = QuickReplyItem("❌ キャンセル", "キャンセル")
+    cancel_qr = QuickReplyItem("❌ キャンセル", text="キャンセル")
 
     # ── Step 1: 金額 ──
     if wizard.step == "amount":
@@ -321,7 +390,7 @@ def _handle_warikan_wizard(
         wizard.step = "people"
         set_wizard(group_id, wizard)
         people_qrs = [
-            QuickReplyItem(f"{n}人", str(n)) for n in range(2, 7)
+            QuickReplyItem(f"{n}人", text=str(n)) for n in range(2, 7)
         ]
         people_qrs.append(cancel_qr)
         return BotResponse(
@@ -342,7 +411,7 @@ def _handle_warikan_wizard(
         return BotResponse(_do_warikan(wizard.data["amount"], people))
 
     clear_wizard(group_id)
-    return BotResponse("⚠️ 予期しないエラーです。最初からやり直してください。", QR_MAIN)
+    return BotResponse("⚠️ 予期しないエラーです。最初からやり直してください。", _build_qr_main(liff_id, _get_members(group_id)))
 
 
 def _format_status(group_id: str) -> str:
@@ -395,7 +464,13 @@ def _append_status(response: str, group_id: str) -> str:
     return response + status
 
 
-def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
+
+def _get_members(group_id: str) -> list[str]:
+    """group_id から現在のメンバーリストを取得する"""
+    return get_session(group_id).members
+
+
+def _handle_regex(text: str, group_id: str, liff_id: str = "") -> Optional[BotResponse]:
     """正規表現ベースのパース。マッチしなければNoneを返す。"""
     t = text.strip()
 
@@ -407,7 +482,7 @@ def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
 
     # ヘルプ
     if t in ("ヘルプ", "へるぷ", "help", "?", "？"):
-        return BotResponse(HELP_TEXT, QR_MAIN)
+        return BotResponse(HELP_TEXT, _build_qr_main(liff_id, _get_members(group_id)))
 
     # リセット
     if t in ("リセット", "りせっと", "reset", "クリア"):
@@ -425,7 +500,7 @@ def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
         return BotResponse(
             f"👥 メンバーを登録しました ({len(parsed_members)}人):\n"
             f"  {names_str}",
-            QR_AFTER_MEMBERS,
+            _build_qr_after_members(liff_id, _get_members(group_id)),
         )
 
     # 人数セット
@@ -435,7 +510,7 @@ def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
         if people <= 0:
             return BotResponse("人数は1以上にしてください。")
         set_people(group_id, people)
-        return BotResponse(f"👤 人数を {people}人 にセットしました。", QR_AFTER_MEMBERS)
+        return BotResponse(f"👤 人数を {people}人 にセットしました。", _build_qr_after_members(liff_id, _get_members(group_id)))
 
     # 精算・清算
     if _SETTLE_PATTERN.search(t) or t in ("合計", "ごうけい"):
@@ -443,7 +518,7 @@ def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
 
     # 状況確認
     if _STATUS_PATTERN.search(t):
-        return BotResponse(_format_status(group_id), QR_STATUS)
+        return BotResponse(_format_status(group_id), _build_qr_status(liff_id, _get_members(group_id)))
 
     # 記録 (「記録 1500円 ランチ」形式)
     parsed_record = parse_record_message(t)
@@ -451,7 +526,7 @@ def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
         amount, label, payer = parsed_record
         if amount <= 0:
             return BotResponse("金額は1以上にしてください。")
-        return BotResponse(_do_record(group_id, amount, label, payer), QR_AFTER_RECORD)
+        return BotResponse(_do_record(group_id, amount, label, payer), _build_qr_after_record(liff_id, _get_members(group_id)))
 
     # 即時割り勘
     parsed = parse_warikan_message(t)
@@ -463,13 +538,15 @@ def _handle_regex(text: str, group_id: str) -> Optional[BotResponse]:
             return BotResponse("人数は1以上にしてください。")
         return BotResponse(_do_warikan(total, people))
 
-    # 自然言語の支払い記録 (「ランチ1500円」「田中がタクシー2500円払った」)
-    parsed_natural = parse_natural_record_message(t)
-    if parsed_natural:
-        amount, label, payer = parsed_natural
-        if amount <= 0:
+    # 自然言語の支払い記録 (「ランチ1500円」「田中がタクシー2500円払った」「コンビニ 800」)
+    parsed_ext = parse_natural_record_extended(t)
+    if parsed_ext:
+        if parsed_ext.amount <= 0:
             return BotResponse("金額は1以上にしてください。")
-        return BotResponse(_do_record(group_id, amount, label, payer), QR_AFTER_RECORD)
+        return BotResponse(
+            _do_record(group_id, parsed_ext.amount, parsed_ext.label, parsed_ext.payer, parsed_ext.participants),
+            _build_qr_after_record(liff_id, _get_members(group_id)),
+        )
 
     return None
 
@@ -490,18 +567,33 @@ def _do_record(
     payer: Optional[str] = None,
     participants: Optional[list[str]] = None,
 ) -> str:
-    """支払い記録"""
+    """支払い記録。支払者/対象者を自動的にメンバーに追加する。"""
     session = get_session(group_id)
-    payer_warning = ""
-    if payer and session.members and payer not in session.members:
-        payer_warning = f"\n⚠️ {payer}はメンバー未登録です。"
+
+    # 支払者・対象者を自動メンバー登録
+    new_names: list[str] = []
+    all_names = []
+    if payer:
+        all_names.append(payer)
+    if participants:
+        all_names.extend(participants)
+    for name in all_names:
+        if name and name not in session.members:
+            session.members.append(name)
+            new_names.append(name)
+    if new_names:
+        set_people(group_id, len(session.members))
+
     session.add_payment(amount, label, payer, participants)
     payer_str = f" ({payer})" if payer else ""
     part_str = ""
     if participants:
         part_str = f"\n👥 対象: {'、'.join(participants)}"
+    member_info = ""
+    if new_names:
+        member_info = f"\n👤 メンバー自動追加: {'、'.join(new_names)} (計{len(session.members)}人)"
     return _append_status(
-        f"✅ 記録: {label} {amount:,}円{payer_str}{part_str}{payer_warning}",
+        f"✅ 記録: {label} {amount:,}円{payer_str}{part_str}{member_info}",
         group_id,
     )
 
@@ -515,7 +607,7 @@ def _do_settle(group_id: str) -> str:
     return calculate_settlement(session, people)
 
 
-def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[BotResponse]:
+def _process_ai_result(result: AIParseResult, group_id: str, liff_id: str = "") -> Optional[BotResponse]:
     """AIParseResultを処理してレスポンスを返す。unknownの場合はNoneを返す。"""
     action = result.action
 
@@ -523,14 +615,14 @@ def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[BotResp
         return None
 
     if action == "help":
-        return BotResponse(HELP_TEXT, QR_MAIN)
+        return BotResponse(HELP_TEXT, _build_qr_main(liff_id, _get_members(group_id)))
 
     if action == "reset":
         reset_session(group_id)
         return BotResponse("🗑️ 記録をリセットしました！", QR_AFTER_RESET)
 
     if action == "status":
-        return BotResponse(_format_status(group_id), QR_STATUS)
+        return BotResponse(_format_status(group_id), _build_qr_status(liff_id, _get_members(group_id)))
 
     if action == "settle":
         return BotResponse(_do_settle(group_id), QR_AFTER_SETTLE)
@@ -544,7 +636,7 @@ def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[BotResp
             _do_record(
                 group_id, result.amount, label, result.payer, result.participants,
             ),
-            QR_AFTER_RECORD,
+            _build_qr_after_record(liff_id, _get_members(group_id)),
         )
 
     if action == "members" and result.names:
@@ -555,7 +647,7 @@ def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[BotResp
         return BotResponse(
             f"👥 メンバーを登録しました ({len(result.names)}人):\n"
             f"  {names_str}",
-            QR_AFTER_MEMBERS,
+            _build_qr_after_members(liff_id, _get_members(group_id)),
         )
 
     if action == "set_people" and result.people:
@@ -564,14 +656,14 @@ def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[BotResp
         set_people(group_id, result.people)
         return BotResponse(
             f"👤 人数を {result.people}人 にセットしました。",
-            QR_AFTER_MEMBERS,
+            _build_qr_after_members(liff_id, _get_members(group_id)),
         )
 
     if action == "ask" and result.message:
-        return BotResponse(f"💡 {result.message}", QR_MAIN)
+        return BotResponse(f"💡 {result.message}", _build_qr_main(liff_id, _get_members(group_id)))
 
     if action == "advice" and result.message:
-        return BotResponse(f"💬 {result.message}", QR_MAIN)
+        return BotResponse(f"💬 {result.message}", _build_qr_main(liff_id, _get_members(group_id)))
 
     return None
 
@@ -588,16 +680,16 @@ def _get_session_info(group_id: str) -> dict:
     }
 
 
-async def handle_text(text: str, group_id: str) -> BotResponse:
+async def handle_text(text: str, group_id: str, liff_id: str = "") -> BotResponse:
     """テキストメッセージを解釈してBotResponseを返す"""
 
     # 0. ウィザード進行中ならそちらを優先
-    wizard_result = _handle_wizard(text, group_id)
+    wizard_result = _handle_wizard(text, group_id, liff_id)
     if wizard_result is not None:
         return wizard_result
 
     # 1. まず正規表現ベースでパース（高速・確実）
-    regex_result = _handle_regex(text, group_id)
+    regex_result = _handle_regex(text, group_id, liff_id)
     if regex_result is not None:
         return regex_result
 
@@ -607,17 +699,17 @@ async def handle_text(text: str, group_id: str) -> BotResponse:
 
     # 2a. AIエラー → ヘルプ誘導
     if parse_result is None:
-        return BotResponse(HELP_TEXT, QR_MAIN)
+        return BotResponse(HELP_TEXT, _build_qr_main(liff_id, _get_members(group_id)))
 
     # 2b. 割り勘アクションと判断 → 処理
-    warikan_result = _process_ai_result(parse_result, group_id)
+    warikan_result = _process_ai_result(parse_result, group_id, liff_id)
     if warikan_result is not None:
         return warikan_result
 
     # 2c. 割り勘と関係ない（unknown）→ AI会話応答
     chat_response = await chat_with_ai(text, session_info=session_info)
     if chat_response:
-        return BotResponse(chat_response, QR_MAIN)
+        return BotResponse(chat_response, _build_qr_main(liff_id, _get_members(group_id)))
 
     # 2d. チャットもエラー → ヘルプ誘導
-    return BotResponse(HELP_TEXT, QR_MAIN)
+    return BotResponse(HELP_TEXT, _build_qr_main(liff_id, _get_members(group_id)))

@@ -6,9 +6,11 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 import httpx
 from dotenv import load_dotenv
 
@@ -25,13 +27,20 @@ logger.info("Python version: %s", sys.version)
 logger.info("OPENAI_API_KEY: %s", "SET" if os.environ.get("OPENAI_API_KEY") else "NOT SET")
 logger.info("LINE_CHANNEL_SECRET: %s", "SET" if os.environ.get("LINE_CHANNEL_SECRET") else "NOT SET")
 logger.info("LINE_CHANNEL_ACCESS_TOKEN: %s", "SET" if os.environ.get("LINE_CHANNEL_ACCESS_TOKEN") else "NOT SET")
+logger.info("LIFF_ID: %s", "SET" if os.environ.get("LIFF_ID") else "NOT SET")
 
 LINE_CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
 LINE_CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
+LIFF_ID = os.environ.get("LIFF_ID", "")
 LINE_REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 app = FastAPI(title="LINE 割り勘Bot")
+
+# 静的ファイル配信 (LIFF フォーム用)
+_static_dir = Path(__file__).parent / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
 def _line_headers() -> dict:
@@ -92,6 +101,7 @@ async def health() -> JSONResponse:
         "status": "ok",
         "python": sys.version,
         "ai_enabled": bool(_get_api_key()),
+        "liff_enabled": bool(LIFF_ID),
     })
 
 
@@ -150,7 +160,7 @@ async def webhook(request: Request) -> JSONResponse:
 
         logger.info("Processing message: %r from group %s", text, group_id)
         try:
-            response = await handle_text(text, group_id)
+            response = await handle_text(text, group_id, liff_id=LIFF_ID)
         except Exception as e:
             logger.error("Failed to handle message: %s", e, exc_info=True)
             response = BotResponse("エラーが発生しました。もう一度お試しください。")

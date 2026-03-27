@@ -318,36 +318,160 @@ def parse_record_message(text: str) -> Optional[tuple[int, str, Optional[str]]]:
     return None
 
 
-# 「田中がランチ1500円払った」「タクシー代2500円ね」のような自然言語 (円は必須)
+# 「田中がランチ1500円払った」「タクシー代2500円ね」のような自然言語
 _NATURAL_RECORD_PATTERN = re.compile(
     r"^(?:(\S+?)[がは]\s*)?(.+?)([0-9,，]+)\s*(?:円|えん)",
     re.IGNORECASE,
 )
 
+# 「コンビニ 800」「タクシー 3000」のように円がなく、ラベル+数字だけ
+_LABEL_AMOUNT_PATTERN = re.compile(
+    r"^([^\d,，]{1,20})\s+([0-9,，]+)\s*(?:円|えん)?$",
+    re.IGNORECASE,
+)
+
+# 「3000円 田中」「1500 田中」のように金額+支払者
+_AMOUNT_PAYER_PATTERN = re.compile(
+    r"^([0-9,，]+)\s*(?:円|えん)?\s+(\S+)$",
+    re.IGNORECASE,
+)
+
+# 対象者の抽出: 「田中と山田で」「田中、山田の分」部分（金額の後にくる名前リスト）
+# 名前は非数字文字を含むことを要求
+_PARTICIPANTS_SUFFIX = re.compile(
+    r"[、,，\s]+([^\d,，\s]+(?:[と、,，][^\d,，\s]+)+)\s*(?:で|の分|分|の割り勘|で割り勘)?\s*$"
+)
+
+# 万・千の漢数字を含む金額パターン
+_KANJI_AMOUNT_PATTERN = re.compile(
+    r"(\d+)\s*万\s*(?:(\d+)\s*千)?|(\d+)\s*千"
+)
+
+
+def _parse_kanji_amount(text: str) -> Optional[int]:
+    """「1万5千」「3千」「2万」のような漢数字金額をパース"""
+    m = _KANJI_AMOUNT_PATTERN.search(text)
+    if not m:
+        return None
+    if m.group(1):  # X万
+        result = int(m.group(1)) * 10000
+        if m.group(2):  # X万Y千
+            result += int(m.group(2)) * 1000
+        return result
+    if m.group(3):  # X千
+        return int(m.group(3)) * 1000
+    return None
+
+
+def _extract_participants(text: str) -> Optional[list[str]]:
+    """テキスト末尾から対象者リストを抽出する。「田中と山田で」「田中、山田の分」など"""
+    m = _PARTICIPANTS_SUFFIX.search(text)
+    if not m:
+        return None
+    raw = m.group(1)
+    names = re.split(r"[と、,，]+", raw)
+    names = [re.sub(r"[での分]$", "", n).strip() for n in names]
+    names = [n for n in names if n and not re.match(r"^[0-9,，]+$", n)]
+    return names if len(names) >= 1 else None
+
+
+@dataclass
+class NaturalParseResult:
+    """自然言語パースの結果"""
+    amount: int
+    label: str
+    payer: Optional[str] = None
+    participants: Optional[list[str]] = None
+
 
 def parse_natural_record_message(text: str) -> Optional[tuple[int, str, Optional[str]]]:
-    """自然言語の支払い記録をパース。円を含むメッセージから金額・ラベル・支払者を抽出。
+    """自然言語の支払い記録をパース。金額・ラベル・支払者を抽出。
 
     - 「ランチ1500円」→ (1500, "ランチ", None)
     - 「タクシー代2500円ね」→ (2500, "タクシー代", None)
     - 「田中がランチ1500円払った」→ (1500, "ランチ", "田中")
+    - 「コンビニ 800」→ (800, "コンビニ", None)
+    - 「3000円 田中」→ (3000, "支払い", "田中")
+    - 「タクシー1万5千円」→ (15000, "タクシー", None)
     """
-    m = _NATURAL_RECORD_PATTERN.match(text.strip())
-    if not m:
+    result = parse_natural_record_extended(text)
+    if result is None:
         return None
+    return result.amount, result.label, result.payer
 
-    payer_raw = m.group(1)
-    label = m.group(2).strip() or "支払い"
-    amount = _clean_number(m.group(3))
 
-    if amount <= 0:
-        return None
+def parse_natural_record_extended(text: str) -> Optional[NaturalParseResult]:
+    """自然言語の支払い記録をパース（対象者情報も含む拡張版）。
 
-    payer: Optional[str] = None
-    if payer_raw and not _is_number_like(payer_raw):
-        payer = payer_raw
+    - 「タクシー3000円 田中と山田で」→ NaturalParseResult(3000, "タクシー", None, ["田中", "山田"])
+    - 「田中がランチ1500円払った」→ NaturalParseResult(1500, "ランチ", "田中", None)
+    """
+    t = text.strip()
 
-    return amount, label, payer
+    # ノイズ除去（末尾の「ね」「よ」「った」「だった」「です」「した」等）
+    t_clean = re.sub(r"(?:だった|でした|払った|出した|立て替えた|ね|よ|な|だよ|です|だ)\s*[！!。]?\s*$", "", t).strip()
+
+    # まず対象者を抽出（末尾から）
+    participants = _extract_participants(t_clean)
+    if participants:
+        # 対象者部分を除去してからパース
+        m_p = _PARTICIPANTS_SUFFIX.search(t_clean)
+        if m_p:
+            t_clean = t_clean[:m_p.start()].strip()
+
+    # 漢数字金額を試す（「タクシー1万5千円」）
+    kanji_amount = _parse_kanji_amount(t_clean)
+
+    # パターン1: 「(支払者が)ラベル 金額円」
+    m = _NATURAL_RECORD_PATTERN.match(t_clean)
+    if m:
+        payer_raw = m.group(1)
+        label = m.group(2).strip() or "支払い"
+        amount = kanji_amount or _clean_number(m.group(3))
+        if amount > 0:
+            payer = payer_raw if payer_raw and not _is_number_like(payer_raw) else None
+            # ラベルが数字のみ（「3000円 田中」で「3」がラベルになるケース）を除外
+            if not _is_number_like(label):
+                return NaturalParseResult(amount, label, payer, participants)
+
+    # パターン2: 「ラベル 数字」（円なし）: 「コンビニ 800」「タクシー 3000」
+    m = _LABEL_AMOUNT_PATTERN.match(t_clean)
+    if m:
+        label = m.group(1).strip()
+        amount = kanji_amount or _clean_number(m.group(2))
+        if amount <= 0:
+            return None
+        # ラベルが「メンバー」等のキーワードなら除外
+        if re.match(r"(?:メンバー|めんばー|members?|記録|きろく|リセット|ヘルプ)", label, re.IGNORECASE):
+            return None
+        return NaturalParseResult(amount, label, None, participants)
+
+    # パターン3: 「金額 支払者名」: 「3000円 田中」「1500 田中」
+    m = _AMOUNT_PAYER_PATTERN.match(t_clean)
+    if m:
+        amount = kanji_amount or _clean_number(m.group(1))
+        payer = m.group(2)
+        if amount <= 0:
+            return None
+        # 支払者名が「人」「名」「で」等なら除外
+        if re.match(r"(?:人|名|で|を|の|円)$", payer):
+            return None
+        return NaturalParseResult(amount, "支払い", payer, participants)
+
+    # 漢数字のみの場合: 「ランチ1万5千円」
+    if kanji_amount and kanji_amount > 0:
+        label_part = _KANJI_AMOUNT_PATTERN.sub("", t_clean)
+        label_part = re.sub(r"[円えん]", "", label_part).strip()
+        # 支払者を抽出
+        payer = None
+        payer_m = re.match(r"^(\S+?)[がは]\s*", label_part)
+        if payer_m:
+            payer = payer_m.group(1)
+            label_part = label_part[payer_m.end():].strip()
+        label_part = label_part or "支払い"
+        return NaturalParseResult(kanji_amount, label_part, payer, participants)
+
+    return None
 
 
 def parse_member_message(text: str) -> Optional[list[str]]:
