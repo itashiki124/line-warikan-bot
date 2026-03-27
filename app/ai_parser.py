@@ -78,7 +78,7 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
     """OpenAI GPT APIでメッセージを解析する。API未設定やエラー時はNoneを返す。"""
     api_key = _get_api_key()
     if not api_key:
-        logger.debug("OPENAI_API_KEY not set, skipping AI parsing")
+        logger.warning("OPENAI_API_KEY not set, skipping AI parsing")
         return None
 
     try:
@@ -117,7 +117,7 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
         )
 
     except Exception as e:
-        logger.warning("AI parsing failed: %s", e)
+        logger.warning("AI parsing failed: %s", e, exc_info=True)
         return None
 
 
@@ -137,5 +137,5 @@ async def chat_with_ai(text: str) -> Optional[str]:
         )
         return response.choices[0].message.content.strip() or None
     except Exception as e:
-        logger.warning("AI chat failed: %s", e)
+        logger.warning("AI chat failed: %s", e, exc_info=True)
         return None
