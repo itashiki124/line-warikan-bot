@@ -1,6 +1,6 @@
 """生成AIを使った自然言語メッセージの解釈モジュール
 
-Google Gemini API (無料枠) を使用して、ざっくりしたメッセージから
+Groq API (無料枠) を使用して、ざっくりしたメッセージから
 割り勘に必要な情報を抽出する。
 """
 import json
@@ -13,14 +13,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1/models/"
-    "gemini-2.0-flash-lite:generateContent"
-)
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _get_api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY") or os.environ.get("Gemini_API_Key", "")
+    return os.environ.get("GROQ_API_KEY", "")
 
 SYSTEM_PROMPT = """\
 あなたはLINEグループの割り勘Botのメッセージ解析器です。
@@ -80,40 +78,39 @@ class AIParseResult:
 
 
 async def parse_with_ai(text: str) -> Optional[AIParseResult]:
-    """Gemini APIでメッセージを解析する。API未設定やエラー時はNoneを返す。"""
+    """Groq APIでメッセージを解析する。API未設定やエラー時はNoneを返す。"""
     api_key = _get_api_key()
     if not api_key:
-        logger.debug("GEMINI_API_KEY not set, skipping AI parsing")
+        logger.debug("GROQ_API_KEY not set, skipping AI parsing")
         return None
 
     try:
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": SYSTEM_PROMPT + "\n\nユーザーのメッセージ:\n" + text}
-                    ]
-                }
+            "model": GROQ_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
             ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 256,
-            },
+            "temperature": 0.1,
+            "max_tokens": 256,
         }
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{GEMINI_URL}?key={api_key}",
+                GROQ_URL,
                 json=payload,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
             )
             resp.raise_for_status()
 
         data = resp.json()
         raw = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "")
             .strip()
         )
 
