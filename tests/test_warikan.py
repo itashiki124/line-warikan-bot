@@ -265,9 +265,10 @@ class TestHandleTextRegex:
     @pytest.fixture(autouse=True)
     def _reset(self):
         """各テスト前にストレージをリセット"""
-        from app.storage import _sessions, _people
+        from app.storage import _sessions, _people, _wizards
         _sessions.clear()
         _people.clear()
+        _wizards.clear()
 
     @pytest.mark.asyncio
     async def test_help(self):
@@ -360,9 +361,10 @@ class TestFormatStatus:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from app.storage import _sessions, _people
+        from app.storage import _sessions, _people, _wizards
         _sessions.clear()
         _people.clear()
+        _wizards.clear()
 
     def test_empty(self):
         from app.line_handler import _format_status
@@ -380,3 +382,126 @@ class TestFormatStatus:
         assert "4,500円" in result
         assert "2件" in result
         assert "3人" in result
+
+
+class TestRecordWizard:
+    """支払い記録ウィザードのテスト"""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from app.storage import _sessions, _people, _wizards
+        _sessions.clear()
+        _people.clear()
+        _wizards.clear()
+
+    @pytest.mark.asyncio
+    async def test_start_wizard(self):
+        """「記録」で支払い記録ウィザードが始まる"""
+        from app.line_handler import handle_text
+        result = await handle_text("記録", "test-group")
+        assert "金額を入力" in result.text
+        assert any("キャンセル" in qr.label for qr in result.quick_replies)
+
+    @pytest.mark.asyncio
+    async def test_wizard_full_flow(self):
+        """ウィザードで金額→項目→支払者の完全フロー"""
+        from app.line_handler import handle_text
+
+        # Step 1: ウィザード開始
+        result = await handle_text("記録", "test-group")
+        assert "金額" in result.text
+
+        # Step 2: 金額入力
+        result = await handle_text("1500", "test-group")
+        assert "1,500円" in result.text
+        assert "何の支払い" in result.text
+
+        # Step 3: 項目入力
+        result = await handle_text("ランチ", "test-group")
+        assert "誰が払った" in result.text
+
+        # Step 4: 支払者スキップ → 完了
+        result = await handle_text("スキップ", "test-group")
+        assert "記録" in result.text
+        assert "ランチ" in result.text
+        assert "1,500円" in result.text
+
+    @pytest.mark.asyncio
+    async def test_wizard_with_payer(self):
+        """ウィザードで支払者を指定する"""
+        from app.line_handler import handle_text
+        from app.storage import get_session
+        session = get_session("test-group")
+        session.set_members(["田中", "山田"])
+
+        await handle_text("記録", "test-group")
+        await handle_text("2000", "test-group")
+        await handle_text("ディナー", "test-group")
+        result = await handle_text("田中", "test-group")
+        assert "記録" in result.text
+        assert "田中" in result.text
+
+    @pytest.mark.asyncio
+    async def test_wizard_cancel(self):
+        """ウィザード途中でキャンセルできる"""
+        from app.line_handler import handle_text
+        from app.storage import get_wizard
+
+        await handle_text("記録", "test-group")
+        result = await handle_text("キャンセル", "test-group")
+        assert "キャンセル" in result.text
+        assert get_wizard("test-group") is None
+
+    @pytest.mark.asyncio
+    async def test_wizard_invalid_amount(self):
+        """無効な金額でやり直しを促す"""
+        from app.line_handler import handle_text
+
+        await handle_text("記録", "test-group")
+        result = await handle_text("abc", "test-group")
+        assert "数字で入力" in result.text
+
+    @pytest.mark.asyncio
+    async def test_wizard_with_participants(self):
+        """3人以上のメンバーがいると対象者を聞かれる"""
+        from app.line_handler import handle_text
+        from app.storage import get_session, set_people
+        session = get_session("test-group")
+        session.set_members(["田中", "山田", "鈴木"])
+        set_people("test-group", 3)
+
+        await handle_text("記録", "test-group")
+        await handle_text("3000", "test-group")
+        await handle_text("タクシー", "test-group")
+        result = await handle_text("田中", "test-group")
+        assert "誰の分" in result.text
+
+        result = await handle_text("田中、山田", "test-group")
+        assert "記録" in result.text
+        assert "タクシー" in result.text
+
+
+class TestWarikanWizard:
+    """即時割り勘ウィザードのテスト"""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from app.storage import _sessions, _people, _wizards
+        _sessions.clear()
+        _people.clear()
+        _wizards.clear()
+
+    @pytest.mark.asyncio
+    async def test_warikan_wizard_flow(self):
+        """割り勘ウィザードで金額→人数の完全フロー"""
+        from app.line_handler import handle_text
+
+        result = await handle_text("割り勘", "test-group")
+        assert "合計金額" in result.text
+
+        result = await handle_text("6000", "test-group")
+        assert "何人で割る" in result.text
+        assert any("人" in qr.label for qr in result.quick_replies)
+
+        result = await handle_text("3", "test-group")
+        assert "2,000円" in result.text
