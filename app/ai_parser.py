@@ -13,11 +13,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.0-flash:generateContent"
 )
+
+
+def _get_api_key() -> str:
+    return os.environ.get("GEMINI_API_KEY", "")
 
 SYSTEM_PROMPT = """\
 あなたはLINEグループの割り勘Botのメッセージ解析器です。
@@ -78,7 +81,8 @@ class AIParseResult:
 
 async def parse_with_ai(text: str) -> Optional[AIParseResult]:
     """Gemini APIでメッセージを解析する。API未設定やエラー時はNoneを返す。"""
-    if not GEMINI_API_KEY:
+    api_key = _get_api_key()
+    if not api_key:
         logger.debug("GEMINI_API_KEY not set, skipping AI parsing")
         return None
 
@@ -99,7 +103,7 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+                f"{GEMINI_URL}?key={api_key}",
                 json=payload,
             )
             resp.raise_for_status()

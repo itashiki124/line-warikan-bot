@@ -79,18 +79,19 @@ def _get_reply_target(source: dict) -> str:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    from app.ai_parser import GEMINI_API_KEY
+    from app.ai_parser import _get_api_key
     return JSONResponse({
         "status": "ok",
-        "ai_enabled": bool(GEMINI_API_KEY),
+        "ai_enabled": bool(_get_api_key()),
     })
 
 
 @app.get("/test-ai")
 async def test_ai() -> JSONResponse:
     """AI パースの動作確認用エンドポイント"""
-    from app.ai_parser import parse_with_ai, GEMINI_API_KEY
-    if not GEMINI_API_KEY:
+    from app.ai_parser import parse_with_ai, _get_api_key
+    api_key = _get_api_key()
+    if not api_key:
         return JSONResponse({
             "error": "GEMINI_API_KEY is not set",
             "key_length": 0,
