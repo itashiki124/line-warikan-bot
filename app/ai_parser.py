@@ -146,3 +146,33 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
     except Exception as e:
         logger.warning("AI parsing unexpected error: %s", e)
         return None
+
+
+async def chat_with_ai(text: str) -> Optional[str]:
+    """割り勘と無関係なメッセージへのGemini AI会話応答。API未設定やエラー時はNoneを返す。"""
+    api_key = _get_api_key()
+    if not api_key:
+        return None
+
+    try:
+        payload = {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 256},
+        }
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                f"{GEMINI_URL}?key={api_key}",
+                json=payload,
+            )
+            resp.raise_for_status()
+        data = resp.json()
+        return (
+            data.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+            .strip()
+        ) or None
+    except Exception as e:
+        logger.warning("AI chat failed: %s", e)
+        return None
