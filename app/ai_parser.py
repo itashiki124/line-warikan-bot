@@ -20,7 +20,7 @@ GEMINI_URL = (
 
 
 def _get_api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY", "")
+    return os.environ.get("GEMINI_API_KEY") or os.environ.get("Gemini_API_Key", "")
 
 SYSTEM_PROMPT = """\
 あなたはLINEグループの割り勘Botのメッセージ解析器です。
