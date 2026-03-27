@@ -28,7 +28,8 @@ SYSTEM_PROMPT = """\
    {"action": "warikan", "amount": 金額(int), "people": 人数(int)}
 
 2. **record** - 支払い記録（誰かが何かを払った情報）
-   {"action": "record", "amount": 金額(int), "label": "説明", "payer": "支払者名 or null"}
+   {"action": "record", "amount": 金額(int), "label": "説明", "payer": "支払者名 or null", "participants": ["対象者名", ...] or null}
+   → participantsはこの支払いを割り勘する対象者。全員ならnull。「田中と山田で割り勘」のように一部のメンバーだけの場合に指定する。
 
 3. **members** - メンバー設定
    {"action": "members", "names": ["名前1", "名前2", ...]}
@@ -66,6 +67,9 @@ SYSTEM_PROMPT = """\
 
 ## 分類ルール・例
 - 「タクシー2500円だった」「ランチ1200円払った」「俺が出した5000円」→ record
+- 「田中がランチ1500円払った、田中と山田の分」→ record (payer="田中", participants=["田中", "山田"])
+- 「タクシー3000円、山田と鈴木で割り勘」→ record (participants=["山田", "鈴木"])
+- 「田中と山田でタクシー代割り勘した、2000円」→ record (participants=["田中", "山田"])
 - 「昨日の飲み 8000円 4人」「3人で割ると？12000円」→ warikan
 - 「田中と山田と鈴木で割り勘」→ members
 - 「3人でやる」「今日は5人」→ set_people
@@ -95,6 +99,7 @@ class AIParseResult:
     payer: Optional[str] = None
     names: Optional[list] = None
     message: Optional[str] = None
+    participants: Optional[list] = None
     raw_response: Optional[str] = None
 
 
@@ -164,6 +169,7 @@ async def parse_with_ai(
             payer=parsed.get("payer"),
             names=parsed.get("names"),
             message=parsed.get("message"),
+            participants=parsed.get("participants"),
             raw_response=raw,
         )
 

@@ -19,6 +19,7 @@ class Payment:
     amount: int
     label: str
     payer: Optional[str] = None
+    participants: Optional[list[str]] = None  # この支払いの対象者（None=全員）
 
 
 @dataclass
@@ -34,8 +35,16 @@ class GroupSession:
     payments: list[Payment] = field(default_factory=list)
     members: list[str] = field(default_factory=list)
 
-    def add_payment(self, amount: int, label: str, payer: Optional[str] = None) -> None:
-        self.payments.append(Payment(amount=amount, label=label, payer=payer))
+    def add_payment(
+        self,
+        amount: int,
+        label: str,
+        payer: Optional[str] = None,
+        participants: Optional[list[str]] = None,
+    ) -> None:
+        self.payments.append(Payment(
+            amount=amount, label=label, payer=payer, participants=participants,
+        ))
 
     def total(self) -> int:
         return sum(p.amount for p in self.payments)
@@ -88,19 +97,26 @@ def calculate_transfers(session: GroupSession, people: int) -> list[Transfer]:
     """各メンバーの立替額と負担額から、最適な送金リストを計算する。
 
     メンバー名が設定されていて支払者情報がある場合のみ有効。
+    支払いごとに participants が指定されていれば、その支払いの負担は
+    対象者のみで按分する（個人間の割り勘に対応）。
     """
     members = session.members
     if not members or not session.has_payer_info():
         return []
 
-    total = session.total()
-    fair_share = total // people
-    remainder = total % people
-
-    # 各メンバーの「公平な負担額」 (端数は先頭メンバーから割り当て)
-    shares: dict[str, int] = {}
-    for i, name in enumerate(members):
-        shares[name] = fair_share + (1 if i < remainder else 0)
+    # 各メンバーの負担額を支払いごとに積算
+    shares: dict[str, int] = {name: 0 for name in members}
+    for p in session.payments:
+        targets = p.participants if p.participants else members
+        # targets のうちメンバーに含まれる人だけで按分
+        valid_targets = [t for t in targets if t in shares]
+        if not valid_targets:
+            valid_targets = list(members)
+        n = len(valid_targets)
+        base = p.amount // n
+        rem = p.amount % n
+        for i, name in enumerate(valid_targets):
+            shares[name] += base + (1 if i < rem else 0)
 
     # 各メンバーの実際の支払額
     paid: dict[str, int] = {name: 0 for name in members}
@@ -156,31 +172,56 @@ def calculate_settlement(session: GroupSession, people: int) -> str:
         return "記録された支払いがありません。\n「記録 1500円 ランチ」のように入力してください。"
 
     total = session.total()
-    result = calculate_warikan(total, people)
+    has_partial = any(p.participants for p in session.payments)
+    members = session.members
 
     lines = ["📊 精算結果"]
     lines.append("─" * 20)
     lines.append("【支払い一覧】")
     for i, p in enumerate(session.payments, 1):
         payer_str = f"({p.payer})" if p.payer else ""
-        lines.append(f"  {i}. {p.label}: {p.amount:,}円 {payer_str}".rstrip())
+        part_str = ""
+        if p.participants:
+            part_str = f" [{','.join(p.participants)}]"
+        lines.append(f"  {i}. {p.label}: {p.amount:,}円 {payer_str}{part_str}".rstrip())
     lines.append(f"\n合計: {total:,}円")
     lines.append(f"人数: {people}人")
-    lines.append("")
-    lines.append("【1人あたりの負担】")
-    if result.remainder == 0:
-        lines.append(f"  全員: {result.base_amount:,}円")
+
+    # メンバーごとの負担額を計算して表示
+    if members and (has_partial or session.has_payer_info()):
+        shares: dict[str, int] = {name: 0 for name in members}
+        for p in session.payments:
+            targets = p.participants if p.participants else members
+            valid_targets = [t for t in targets if t in shares]
+            if not valid_targets:
+                valid_targets = list(members)
+            n = len(valid_targets)
+            base = p.amount // n
+            rem = p.amount % n
+            for j, name in enumerate(valid_targets):
+                shares[name] += base + (1 if j < rem else 0)
+
+        lines.append("")
+        lines.append("【1人あたりの負担】")
+        for name in members:
+            lines.append(f"  {name}: {shares[name]:,}円")
     else:
-        lines.append(f"  {result.remainder}人: {result.base_amount + 1:,}円")
-        lines.append(f"  {people - result.remainder}人: {result.base_amount:,}円")
+        result = calculate_warikan(total, people)
+        lines.append("")
+        lines.append("【1人あたりの負担】")
+        if result.remainder == 0:
+            lines.append(f"  全員: {result.base_amount:,}円")
+        else:
+            lines.append(f"  {result.remainder}人: {result.base_amount + 1:,}円")
+            lines.append(f"  {people - result.remainder}人: {result.base_amount:,}円")
 
     # 誰→誰にいくら払うかの精算
     transfers = calculate_transfers(session, people)
     if transfers:
         lines.append("")
-        lines.append("【送金プラン】")
+        lines.append("【💸 送金プラン】")
         for t in transfers:
-            lines.append(f"  💸 {t.from_person} → {t.to_person}: {t.amount:,}円")
+            lines.append(f"  {t.from_person} → {t.to_person}: {t.amount:,}円")
 
     return "\n".join(lines)
 

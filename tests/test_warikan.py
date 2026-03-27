@@ -3,6 +3,7 @@ import pytest
 from app.warikan import (
     calculate_warikan,
     calculate_transfers,
+    calculate_settlement,
     parse_warikan_message,
     parse_record_message,
     parse_member_message,
@@ -210,6 +211,53 @@ class TestCalculateTransfers:
         transfers = calculate_transfers(session, 2)
         assert transfers == []
 
+    def test_partial_participants(self):
+        """3人メンバーだが2人だけの支払い"""
+        session = GroupSession()
+        session.set_members(["田中", "山田", "鈴木"])
+        session.add_payment(2000, "タクシー", "田中", participants=["田中", "山田"])
+
+        transfers = calculate_transfers(session, 3)
+        assert len(transfers) == 1
+        assert transfers[0].from_person == "山田"
+        assert transfers[0].to_person == "田中"
+        assert transfers[0].amount == 1000
+
+    def test_partial_and_full_mixed(self):
+        """全員の支払いと部分的な支払いの混在"""
+        session = GroupSession()
+        session.set_members(["田中", "山田", "鈴木"])
+        # 全員分のディナー3000円（田中が立替）
+        session.add_payment(3000, "ディナー", "田中")
+        # 田中と山田だけのタクシー2000円（山田が立替）
+        session.add_payment(2000, "タクシー", "山田", participants=["田中", "山田"])
+
+        # ディナー: 全員1000円ずつ
+        # タクシー: 田中と山田で1000円ずつ
+        # 田中: 払った3000 - 負担(1000+1000)=2000 → +1000
+        # 山田: 払った2000 - 負担(1000+1000)=2000 → ±0
+        # 鈴木: 払った0 - 負担(1000)=1000 → -1000
+        transfers = calculate_transfers(session, 3)
+        assert len(transfers) == 1
+        assert transfers[0].from_person == "鈴木"
+        assert transfers[0].to_person == "田中"
+        assert transfers[0].amount == 1000
+
+    def test_only_subset_no_full_member(self):
+        """鈴木が関与しない支払いのみ"""
+        session = GroupSession()
+        session.set_members(["田中", "山田", "鈴木"])
+        session.add_payment(4000, "ランチ", "田中", participants=["田中", "山田"])
+
+        # 田中: 4000 - 2000 = +2000
+        # 山田: 0 - 2000 = -2000
+        # 鈴木: 0 - 0 = 0 (負担なし)
+        transfers = calculate_transfers(session, 3)
+        assert len(transfers) == 1
+        assert transfers[0].from_person == "山田"
+        assert transfers[0].to_person == "田中"
+        assert transfers[0].amount == 2000
+
 
 class TestHandleTextRegex:
     """handle_text の正規表現パスのテスト (AI不使用)"""
@@ -258,6 +306,53 @@ class TestHandleTextRegex:
         session.add_payment(2000, "ランチ", None)
         result = await handle_text("精算", "test-group")
         assert "精算結果" in result
+
+
+class TestCalculateSettlement:
+    """calculate_settlement のテスト"""
+
+    def test_settlement_shows_transfers(self):
+        """精算結果に送金プランが表示される"""
+        session = GroupSession()
+        session.set_members(["田中", "山田"])
+        session.add_payment(2000, "ランチ", "田中")
+        result = calculate_settlement(session, 2)
+        assert "送金プラン" in result
+        assert "山田 → 田中" in result
+        assert "1,000円" in result
+
+    def test_settlement_with_partial_participants(self):
+        """一部メンバーのみの支払いが精算に反映される"""
+        session = GroupSession()
+        session.set_members(["田中", "山田", "鈴木"])
+        session.add_payment(3000, "ディナー", "田中")
+        session.add_payment(2000, "タクシー", "田中", participants=["田中", "山田"])
+        result = calculate_settlement(session, 3)
+        assert "精算結果" in result
+        assert "送金プラン" in result
+        assert "[田中,山田]" in result
+
+    def test_settlement_per_person_breakdown(self):
+        """メンバーごとの負担額が表示される"""
+        session = GroupSession()
+        session.set_members(["田中", "山田", "鈴木"])
+        session.add_payment(3000, "ディナー", "田中")
+        session.add_payment(2000, "タクシー", "田中", participants=["田中", "山田"])
+        result = calculate_settlement(session, 3)
+        # 田中: 1000(ディナー) + 1000(タクシー) = 2000
+        # 山田: 1000(ディナー) + 1000(タクシー) = 2000
+        # 鈴木: 1000(ディナー) + 0(タクシー) = 1000
+        assert "田中: 2,000円" in result
+        assert "山田: 2,000円" in result
+        assert "鈴木: 1,000円" in result
+
+    def test_settlement_no_payer_info(self):
+        """支払者情報なしの場合は均等割り表示"""
+        session = GroupSession()
+        session.add_payment(3000, "ディナー")
+        result = calculate_settlement(session, 3)
+        assert "精算結果" in result
+        assert "全員: 1,000円" in result
 
 
 class TestFormatStatus:

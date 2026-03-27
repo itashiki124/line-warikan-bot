@@ -28,6 +28,9 @@ HELP_TEXT = """\
   「今いくら？」
   「清算して」
 
+【一部のメンバーで割り勘】
+  「タクシー3000円、田中と山田で割り勘」
+
 【メンバー登録】
   「メンバーは田中と山田と鈴木」
 
@@ -73,7 +76,10 @@ def _format_status(group_id: str) -> str:
         lines.append(f"\n【支払い一覧】({len(session.payments)}件)")
         for i, p in enumerate(session.payments, 1):
             payer_str = f" ({p.payer})" if p.payer else ""
-            lines.append(f"  {i}. {p.label}: {p.amount:,}円{payer_str}")
+            part_str = ""
+            if p.participants:
+                part_str = f" [{','.join(p.participants)}]"
+            lines.append(f"  {i}. {p.label}: {p.amount:,}円{payer_str}{part_str}")
         lines.append(f"\n💰 合計: {session.total():,}円")
         if people:
             per_person = session.total() // people
@@ -179,16 +185,25 @@ def _do_warikan(total: int, people: int) -> str:
     return f"💴 割り勘計算\n{result.description}"
 
 
-def _do_record(group_id: str, amount: int, label: str, payer: Optional[str] = None) -> str:
+def _do_record(
+    group_id: str,
+    amount: int,
+    label: str,
+    payer: Optional[str] = None,
+    participants: Optional[list[str]] = None,
+) -> str:
     """支払い記録"""
     session = get_session(group_id)
     payer_warning = ""
     if payer and session.members and payer not in session.members:
         payer_warning = f"\n⚠️ {payer}はメンバー未登録です。"
-    session.add_payment(amount, label, payer)
+    session.add_payment(amount, label, payer, participants)
     payer_str = f" ({payer})" if payer else ""
+    part_str = ""
+    if participants:
+        part_str = f"\n👥 対象: {'、'.join(participants)}"
     return _append_status(
-        f"✅ 記録: {label} {amount:,}円{payer_str}{payer_warning}",
+        f"✅ 記録: {label} {amount:,}円{payer_str}{part_str}{payer_warning}",
         group_id,
     )
 
@@ -227,7 +242,9 @@ def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[str]:
 
     if action == "record" and result.amount:
         label = result.label or "支払い"
-        return _do_record(group_id, result.amount, label, result.payer)
+        return _do_record(
+            group_id, result.amount, label, result.payer, result.participants,
+        )
 
     if action == "members" and result.names:
         session = get_session(group_id)
