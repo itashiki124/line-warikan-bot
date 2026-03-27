@@ -15,7 +15,7 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.0-flash-lite"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 
 
 def _get_api_key() -> str:
@@ -26,7 +26,7 @@ def _get_client() -> Optional[genai.Client]:
     api_key = _get_api_key()
     if not api_key:
         return None
-    return genai.Client(api_key=api_key)
+    return genai.Client(api_key=api_key, http_options={"timeout": 8})
 
 
 SYSTEM_PROMPT = """\

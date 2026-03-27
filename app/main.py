@@ -89,30 +89,16 @@ async def health() -> JSONResponse:
 @app.get("/test-ai")
 async def test_ai() -> JSONResponse:
     """AI パースの動作確認用エンドポイント"""
-    from app.ai_parser import _get_api_key, GEMINI_URL
-    import httpx as _httpx
+    from app.ai_parser import parse_with_ai, _get_api_key, GEMINI_MODEL
     api_key = _get_api_key()
     if not api_key:
-        return JSONResponse({
-            "error": "GEMINI_API_KEY is not set",
-            "key_length": 0,
-        })
+        return JSONResponse({"error": "GEMINI_API_KEY is not set", "key_length": 0})
     try:
-        # Gemini API を直接呼んで生レスポンスを返す
-        payload = {
-            "contents": [{"parts": [{"text": "こんにちは。1+1は？"}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 64},
-        }
-        async with _httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{GEMINI_URL}?key={api_key}",
-                json=payload,
-            )
+        result = await parse_with_ai("ランチ1500円")
         return JSONResponse({
-            "gemini_status": resp.status_code,
-            "gemini_body": resp.text[:500],
+            "model": GEMINI_MODEL,
             "key_length": len(api_key),
-            "url": GEMINI_URL,
+            "result": result.__dict__ if result else None,
         })
     except Exception as e:
         return JSONResponse({"error": str(e), "key_length": len(api_key)}, status_code=500)
