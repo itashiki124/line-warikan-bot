@@ -79,7 +79,32 @@ def _get_reply_target(source: dict) -> str:
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+    from app.ai_parser import GEMINI_API_KEY
+    return JSONResponse({
+        "status": "ok",
+        "ai_enabled": bool(GEMINI_API_KEY),
+    })
+
+
+@app.get("/test-ai")
+async def test_ai() -> JSONResponse:
+    """AI パースの動作確認用エンドポイント"""
+    from app.ai_parser import parse_with_ai, GEMINI_API_KEY
+    if not GEMINI_API_KEY:
+        return JSONResponse({
+            "error": "GEMINI_API_KEY is not set",
+            "key_length": 0,
+        })
+    result = await parse_with_ai("昨日のランチ1500円を田中が払った")
+    if result:
+        return JSONResponse({
+            "status": "ok",
+            "action": result.action,
+            "amount": result.amount,
+            "payer": result.payer,
+            "label": result.label,
+        })
+    return JSONResponse({"error": "AI parse returned None", "key_length": len(GEMINI_API_KEY)})
 
 
 @app.post("/webhook")
