@@ -14,7 +14,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1/models/"
+    "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.0-flash-lite:generateContent"
 )
 
@@ -138,6 +138,13 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
             raw_response=raw,
         )
 
+    except httpx.HTTPStatusError as e:
+        logger.warning(
+            "AI parsing HTTP error: %s | response: %s",
+            e,
+            e.response.text[:500] if e.response else "no response",
+        )
+        return None
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
         logger.warning("AI parsing failed: %s", e)
         return None
