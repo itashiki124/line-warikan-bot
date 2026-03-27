@@ -245,7 +245,25 @@ def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[str]:
         set_people(group_id, result.people)
         return f"👤 人数を {result.people}人 にセットしました。"
 
+    if action == "ask" and result.message:
+        return f"💡 {result.message}"
+
+    if action == "advice" and result.message:
+        return f"💬 {result.message}"
+
     return None
+
+
+def _get_session_info(group_id: str) -> dict:
+    """セッションの現在情報をdictで返す（AIにコンテキストとして渡す用）"""
+    session = get_session(group_id)
+    people = get_people(group_id)
+    return {
+        "members": session.members,
+        "people": people,
+        "payment_count": len(session.payments),
+        "total": session.total() if session.payments else 0,
+    }
 
 
 async def handle_text(text: str, group_id: str) -> str:
@@ -256,8 +274,9 @@ async def handle_text(text: str, group_id: str) -> str:
     if regex_result is not None:
         return regex_result
 
-    # 2. AIパースにフォールバック
-    parse_result = await parse_with_ai(text)
+    # 2. AIパースにフォールバック（セッション情報を渡す）
+    session_info = _get_session_info(group_id)
+    parse_result = await parse_with_ai(text, session_info=session_info)
 
     # 2a. AIエラー → ヘルプ誘導
     if parse_result is None:
@@ -269,7 +288,7 @@ async def handle_text(text: str, group_id: str) -> str:
         return warikan_result
 
     # 2c. 割り勘と関係ない（unknown）→ AI会話応答
-    chat_response = await chat_with_ai(text)
+    chat_response = await chat_with_ai(text, session_info=session_info)
     if chat_response:
         return chat_response
 
