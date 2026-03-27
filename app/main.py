@@ -127,7 +127,12 @@ async def webhook(request: Request) -> JSONResponse:
         logger.warning("Invalid signature received")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    data = json.loads(body)
+    try:
+        data = json.loads(body)
+    except Exception as e:
+        logger.error("Failed to parse webhook body: %s", e)
+        return JSONResponse({"status": "ok"})
+
     logger.info("Webhook received: %d events", len(data.get("events", [])))
 
     for event in data.get("events", []):

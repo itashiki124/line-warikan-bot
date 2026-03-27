@@ -206,12 +206,15 @@ async def _handle_ai(text: str, group_id: str) -> Optional[str]:
     """AIパースでメッセージを解釈する"""
     result = await parse_with_ai(text)
     if result is None:
-        return None
+        return "「ヘルプ」と送るとコマンド一覧が確認できます。"
 
     action = result.action
 
     if action == "unknown":
-        return await chat_with_ai(text)
+        chat_response = await chat_with_ai(text)
+        if chat_response is not None:
+            return chat_response
+        return "「ヘルプ」と送るとコマンド一覧が確認できます。"
 
     if action == "help":
         return HELP_TEXT
