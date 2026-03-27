@@ -122,7 +122,7 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
 
 
 async def chat_with_ai(text: str) -> Optional[str]:
-    """割り勘と無関係なメッセージへのOpenAI AI会話応答。API未設定やエラー時はNoneを返す。"""
+    """割り勘と無関係なメッセージへのAI会話応答。API未設定やエラー時はNoneを返す。"""
     api_key = _get_api_key()
     if not api_key:
         return None

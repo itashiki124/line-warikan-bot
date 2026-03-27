@@ -202,19 +202,12 @@ def _do_settle(group_id: str) -> str:
     return calculate_settlement(session, people)
 
 
-async def _handle_ai(text: str, group_id: str) -> Optional[str]:
-    """AIパースでメッセージを解釈する"""
-    result = await parse_with_ai(text)
-    if result is None:
-        return "「ヘルプ」と送るとコマンド一覧が確認できます。"
-
+def _process_ai_result(result: AIParseResult, group_id: str) -> Optional[str]:
+    """AIParseResultを処理してレスポンスを返す。unknownの場合はNoneを返す。"""
     action = result.action
 
     if action == "unknown":
-        chat_response = await chat_with_ai(text)
-        if chat_response is not None:
-            return chat_response
-        return "「ヘルプ」と送るとコマンド一覧が確認できます。"
+        return None
 
     if action == "help":
         return HELP_TEXT
@@ -263,14 +256,22 @@ async def handle_text(text: str, group_id: str) -> str:
     if regex_result is not None:
         return regex_result
 
-    # 2. 正規表現で解釈できなかった場合、AIにフォールバック
-    ai_result = await _handle_ai(text, group_id)
-    if ai_result is not None:
-        return ai_result
+    # 2. AIパースにフォールバック
+    parse_result = await parse_with_ai(text)
 
-    # 3. どちらでも解釈できなかった場合
-    return (
-        "メッセージを認識できませんでした。\n"
-        "例: 「ランチ1500円」「タクシー2500円、田中が払った」\n"
-        "「ヘルプ」で使い方を確認できます。"
-    )
+    # 2a. AIエラー → ヘルプ誘導
+    if parse_result is None:
+        return HELP_TEXT
+
+    # 2b. 割り勘アクションと判断 → 処理
+    warikan_result = _process_ai_result(parse_result, group_id)
+    if warikan_result is not None:
+        return warikan_result
+
+    # 2c. 割り勘と関係ない（unknown）→ AI会話応答
+    chat_response = await chat_with_ai(text)
+    if chat_response:
+        return chat_response
+
+    # 2d. チャットもエラー → ヘルプ誘導
+    return HELP_TEXT
