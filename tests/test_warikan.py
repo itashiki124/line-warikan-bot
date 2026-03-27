@@ -209,3 +209,79 @@ class TestCalculateTransfers:
 
         transfers = calculate_transfers(session, 2)
         assert transfers == []
+
+
+class TestHandleTextRegex:
+    """handle_text の正規表現パスのテスト (AI不使用)"""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        """各テスト前にストレージをリセット"""
+        from app.storage import _sessions, _people
+        _sessions.clear()
+        _people.clear()
+
+    @pytest.mark.asyncio
+    async def test_help(self):
+        from app.line_handler import handle_text
+        result = await handle_text("ヘルプ", "test-group")
+        assert "割り勘Bot" in result
+
+    @pytest.mark.asyncio
+    async def test_reset(self):
+        from app.line_handler import handle_text
+        result = await handle_text("リセット", "test-group")
+        assert "リセット" in result
+
+    @pytest.mark.asyncio
+    async def test_warikan_basic(self):
+        from app.line_handler import handle_text
+        result = await handle_text("3000円 3人", "test-group")
+        assert "1,000円" in result
+
+    @pytest.mark.asyncio
+    async def test_record_shows_status(self):
+        """記録後に集計状況が表示される"""
+        from app.line_handler import handle_text
+        from app.storage import set_people
+        set_people("test-group", 3)
+        result = await handle_text("記録 1500円 ランチ", "test-group")
+        assert "1,500円" in result
+        assert "現在:" in result
+
+    @pytest.mark.asyncio
+    async def test_settle(self):
+        from app.line_handler import handle_text
+        from app.storage import set_people, get_session
+        set_people("test-group", 2)
+        session = get_session("test-group")
+        session.add_payment(2000, "ランチ", None)
+        result = await handle_text("精算", "test-group")
+        assert "精算結果" in result
+
+
+class TestFormatStatus:
+    """_format_status のテスト"""
+
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from app.storage import _sessions, _people
+        _sessions.clear()
+        _people.clear()
+
+    def test_empty(self):
+        from app.line_handler import _format_status
+        result = _format_status("test-group")
+        assert "まだ記録がありません" in result
+
+    def test_with_payments(self):
+        from app.line_handler import _format_status
+        from app.storage import get_session, set_people
+        set_people("test-group", 3)
+        session = get_session("test-group")
+        session.add_payment(3000, "ディナー", "田中")
+        session.add_payment(1500, "タクシー")
+        result = _format_status("test-group")
+        assert "4,500円" in result
+        assert "2件" in result
+        assert "3人" in result

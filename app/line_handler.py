@@ -1,11 +1,13 @@
 """LINEメッセージハンドラー"""
 import re
+from typing import Optional
 from app.warikan import (
     calculate_warikan,
     calculate_settlement,
     parse_warikan_message,
     parse_record_message,
     parse_member_message,
+    GroupSession,
 )
 from app.storage import (
     get_session,
@@ -13,25 +15,23 @@ from app.storage import (
     get_people,
     set_people,
 )
+from app.ai_parser import parse_with_ai, AIParseResult
 
 HELP_TEXT = """\
 💰 割り勘Bot の使い方
 
-【即時計算】
-  3000円 3人
-  飲み会5000円を4人で
-  → 金額と人数があればOK！
+自然な言葉でOK！例えば:
+  「昨日の飲み会8000円、4人」
+  「田中がランチ1500円払った」
+  「タクシー代2500円ね」
+  「今いくら？」
+  「清算して」
 
-【支払いを記録して精算】
-  人数 4人               … 人数をセット
-  メンバー 田中 山田 鈴木 佐藤 … メンバー登録
-  記録 田中 3000円 ランチ  … 誰が払ったか記録
-  記録 1200円 コーヒー    … 支払者なしでもOK
-  精算                   … 合計＋誰→誰に払うか計算
+【メンバー登録】
+  「メンバーは田中と山田と鈴木」
 
 【その他】
-  リセット  … 記録をクリア
-  ヘルプ    … この説明を表示
+  リセット / ヘルプ
 """
 
 _PEOPLE_SET_PATTERN = re.compile(
@@ -40,8 +40,55 @@ _PEOPLE_SET_PATTERN = re.compile(
 )
 
 
-def handle_text(text: str, group_id: str) -> str:
-    """テキストメッセージを解釈してレスポンス文字列を返す"""
+def _format_status(group_id: str) -> str:
+    """現在の集計状況を生成する"""
+    session = get_session(group_id)
+    people = get_people(group_id)
+
+    if not session.payments and not session.members:
+        return "📋 まだ記録がありません。"
+
+    lines = ["📋 現在の集計状況"]
+    lines.append("─" * 18)
+
+    if session.members:
+        lines.append(f"👥 メンバー: {', '.join(session.members)}")
+
+    if people:
+        lines.append(f"👤 人数: {people}人")
+
+    if session.payments:
+        lines.append(f"\n【支払い一覧】({len(session.payments)}件)")
+        for i, p in enumerate(session.payments, 1):
+            payer_str = f" ({p.payer})" if p.payer else ""
+            lines.append(f"  {i}. {p.label}: {p.amount:,}円{payer_str}")
+        lines.append(f"\n💰 合計: {session.total():,}円")
+        if people:
+            per_person = session.total() // people
+            lines.append(f"📐 1人あたり約 {per_person:,}円")
+    else:
+        lines.append("\n支払い記録はまだありません。")
+
+    return "\n".join(lines)
+
+
+def _append_status(response: str, group_id: str) -> str:
+    """レスポンスの後に現在の集計状況を追加する"""
+    session = get_session(group_id)
+    if not session.payments:
+        return response
+
+    people = get_people(group_id)
+    count = len(session.payments)
+    total = session.total()
+    status = f"\n\n📋 現在: {count}件 / 合計 {total:,}円"
+    if people:
+        status += f" / {people}人"
+    return response + status
+
+
+def _handle_regex(text: str, group_id: str) -> Optional[str]:
+    """正規表現ベースのパース。マッチしなければNoneを返す。"""
     t = text.strip()
 
     # ヘルプ
@@ -51,9 +98,9 @@ def handle_text(text: str, group_id: str) -> str:
     # リセット
     if t in ("リセット", "りせっと", "reset", "クリア"):
         reset_session(group_id)
-        return "記録をリセットしました！"
+        return "🗑️ 記録をリセットしました！"
 
-    # メンバー設定: 「メンバー 田中 山田 鈴木」
+    # メンバー設定
     parsed_members = parse_member_message(t)
     if parsed_members:
         session = get_session(group_id)
@@ -61,50 +108,32 @@ def handle_text(text: str, group_id: str) -> str:
         set_people(group_id, len(parsed_members))
         names_str = "、".join(parsed_members)
         return (
-            f"メンバーを登録しました ({len(parsed_members)}人):\n"
-            f"  {names_str}\n\n"
-            "「記録 名前 金額 説明」で支払いを追加できます。"
+            f"👥 メンバーを登録しました ({len(parsed_members)}人):\n"
+            f"  {names_str}"
         )
 
-    # 人数セット: 「人数 4人」
+    # 人数セット
     m = _PEOPLE_SET_PATTERN.match(t)
     if m:
         people = int(m.group(1).replace(",", "").replace("，", ""))
         if people <= 0:
             return "人数は1以上にしてください。"
         set_people(group_id, people)
-        return f"人数を {people}人 にセットしました。\n「記録 金額 説明」で支払いを追加できます。"
+        return f"👤 人数を {people}人 にセットしました。"
 
     # 精算
     if t in ("精算", "せいさん", "settle", "合計", "ごうけい"):
-        people = get_people(group_id)
-        if people is None:
-            return "先に「人数 〇人」または「メンバー 名前...」で人数をセットしてください。"
-        session = get_session(group_id)
-        return calculate_settlement(session, people)
+        return _do_settle(group_id)
 
-    # 記録: 「記録 [支払者] 1500円 ランチ」
+    # 記録
     parsed_record = parse_record_message(t)
     if parsed_record:
         amount, label, payer = parsed_record
         if amount <= 0:
             return "金額は1以上にしてください。"
-        session = get_session(group_id)
-        # 支払者がメンバーに含まれていない場合の警告
-        payer_warning = ""
-        if payer and session.members and payer not in session.members:
-            payer_warning = f"\n⚠️ {payer}はメンバーに登録されていません。「メンバー」で確認してください。"
-        session.add_payment(amount, label, payer)
-        total = session.total()
-        count = len(session.payments)
-        payer_str = f" ({payer})" if payer else ""
-        return (
-            f"✅ 記録しました: {label} {amount:,}円{payer_str}\n"
-            f"累計 {count}件 / 合計 {total:,}円{payer_warning}\n\n"
-            "「精算」で割り勘計算できます。"
-        )
+        return _do_record(group_id, amount, label, payer)
 
-    # 即時割り勘: 「3000円 3人」「飲み会5000円4人で割って」etc.
+    # 即時割り勘
     parsed = parse_warikan_message(t)
     if parsed:
         total, people = parsed
@@ -112,18 +141,109 @@ def handle_text(text: str, group_id: str) -> str:
             return "金額は1以上にしてください。"
         if people <= 0:
             return "人数は1以上にしてください。"
-        try:
-            result = calculate_warikan(total, people)
-        except ValueError as e:
-            return str(e)
+        return _do_warikan(total, people)
 
-        lines = [f"💴 割り勘計算"]
-        lines.append(result.description)
-        return "\n".join(lines)
+    return None
 
-    # 未認識
+
+def _do_warikan(total: int, people: int) -> str:
+    """即時割り勘計算"""
+    try:
+        result = calculate_warikan(total, people)
+    except ValueError as e:
+        return str(e)
+    return f"💴 割り勘計算\n{result.description}"
+
+
+def _do_record(group_id: str, amount: int, label: str, payer: Optional[str] = None) -> str:
+    """支払い記録"""
+    session = get_session(group_id)
+    payer_warning = ""
+    if payer and session.members and payer not in session.members:
+        payer_warning = f"\n⚠️ {payer}はメンバー未登録です。"
+    session.add_payment(amount, label, payer)
+    payer_str = f" ({payer})" if payer else ""
+    return _append_status(
+        f"✅ 記録: {label} {amount:,}円{payer_str}{payer_warning}",
+        group_id,
+    )
+
+
+def _do_settle(group_id: str) -> str:
+    """精算"""
+    people = get_people(group_id)
+    if people is None:
+        return "先に人数かメンバーを教えてください。\n例: 「4人」「メンバーは田中と山田と鈴木」"
+    session = get_session(group_id)
+    return calculate_settlement(session, people)
+
+
+async def _handle_ai(text: str, group_id: str) -> Optional[str]:
+    """AIパースでメッセージを解釈する"""
+    result = await parse_with_ai(text)
+    if result is None:
+        return None
+
+    action = result.action
+
+    if action == "unknown":
+        return None
+
+    if action == "help":
+        return HELP_TEXT
+
+    if action == "reset":
+        reset_session(group_id)
+        return "🗑️ 記録をリセットしました！"
+
+    if action == "status":
+        return _format_status(group_id)
+
+    if action == "settle":
+        return _do_settle(group_id)
+
+    if action == "warikan" and result.amount and result.people:
+        return _do_warikan(result.amount, result.people)
+
+    if action == "record" and result.amount:
+        label = result.label or "支払い"
+        return _do_record(group_id, result.amount, label, result.payer)
+
+    if action == "members" and result.names:
+        session = get_session(group_id)
+        session.set_members(result.names)
+        set_people(group_id, len(result.names))
+        names_str = "、".join(result.names)
+        return (
+            f"👥 メンバーを登録しました ({len(result.names)}人):\n"
+            f"  {names_str}"
+        )
+
+    if action == "set_people" and result.people:
+        if result.people <= 0:
+            return "人数は1以上にしてください。"
+        set_people(group_id, result.people)
+        return f"👤 人数を {result.people}人 にセットしました。"
+
+    return None
+
+
+async def handle_text(text: str, group_id: str) -> str:
+    """テキストメッセージを解釈してレスポンス文字列を返す"""
+
+    # 1. まず正規表現ベースでパース（高速・確実）
+    regex_result = _handle_regex(text, group_id)
+    if regex_result is not None:
+        return regex_result
+
+    # 2. 正規表現で解釈できなかった場合、AIにフォールバック
+    ai_result = await _handle_ai(text, group_id)
+    if ai_result is not None:
+        return ai_result
+
+    # 3. どちらでも解釈できなかった場合
     return (
         "メッセージを認識できませんでした。\n"
-        "例: 「3000円 3人」「飲み会5000円を4人で」\n"
+        "例: 「ランチ1500円」「タクシー2500円、田中が払った」\n"
         "「ヘルプ」で使い方を確認できます。"
     )

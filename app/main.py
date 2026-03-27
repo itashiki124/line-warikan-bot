@@ -114,7 +114,7 @@ async def webhook(request: Request) -> JSONResponse:
 
         logger.info("Processing message: %r from group %s", text, group_id)
         try:
-            response_text = handle_text(text, group_id)
+            response_text = await handle_text(text, group_id)
         except Exception as e:
             logger.error("Failed to handle message: %s", e, exc_info=True)
             response_text = "エラーが発生しました。もう一度お試しください。"
