@@ -1,26 +1,33 @@
 """生成AIを使った自然言語メッセージの解釈モジュール
 
-Google Gemini API (無料枠) を使用して、ざっくりしたメッセージから
-割り勘に必要な情報を抽出する。
+Google Gemini API (google-genai パッケージ) を使用して、
+ざっくりしたメッセージから割り勘に必要な情報を抽出する。
 """
+import asyncio
 import json
 import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
 
-import httpx
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1/models/"
-    "gemini-2.0-flash-lite:generateContent"
-)
+GEMINI_MODEL = "gemini-2.0-flash-lite"
 
 
 def _get_api_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("Gemini_API_Key", "")
+
+
+def _get_client() -> Optional[genai.Client]:
+    api_key = _get_api_key()
+    if not api_key:
+        return None
+    return genai.Client(api_key=api_key)
+
 
 SYSTEM_PROMPT = """\
 あなたはLINEグループの割り勘Botのメッセージ解析器です。
@@ -75,47 +82,29 @@ class AIParseResult:
     people: Optional[int] = None
     label: Optional[str] = None
     payer: Optional[str] = None
-    names: Optional[list[str]] = None
+    names: Optional[list] = None
     raw_response: Optional[str] = None
 
 
 async def parse_with_ai(text: str) -> Optional[AIParseResult]:
     """Gemini APIでメッセージを解析する。API未設定やエラー時はNoneを返す。"""
-    api_key = _get_api_key()
-    if not api_key:
+    client = _get_client()
+    if client is None:
         logger.debug("GEMINI_API_KEY not set, skipping AI parsing")
         return None
 
     try:
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": SYSTEM_PROMPT + "\n\nユーザーのメッセージ:\n" + text}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 256,
-            },
-        }
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(
-                f"{GEMINI_URL}?key={api_key}",
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        raw = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-            .strip()
+        prompt = SYSTEM_PROMPT + "\n\nユーザーのメッセージ:\n" + text
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=256,
+            ),
         )
+        raw = response.text.strip()
 
         # JSONブロックを抽出（```json ... ``` で囲まれている場合に対応）
         json_str = raw
@@ -138,6 +127,24 @@ async def parse_with_ai(text: str) -> Optional[AIParseResult]:
             raw_response=raw,
         )
 
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as e:
+    except Exception as e:
         logger.warning("AI parsing failed: %s", e)
+        return None
+
+
+async def chat_with_ai(text: str) -> Optional[str]:
+    """割り勘と無関係なメッセージへのGemini AI会話応答。API未設定やエラー時はNoneを返す。"""
+    client = _get_client()
+    if client is None:
+        return None
+
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=GEMINI_MODEL,
+            contents=text,
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.warning("AI chat failed: %s", e)
         return None

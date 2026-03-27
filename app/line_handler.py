@@ -15,7 +15,7 @@ from app.storage import (
     get_people,
     set_people,
 )
-from app.ai_parser import parse_with_ai, AIParseResult
+from app.ai_parser import parse_with_ai, chat_with_ai, AIParseResult
 
 HELP_TEXT = """\
 💰 割り勘Bot の使い方
@@ -187,7 +187,7 @@ async def _handle_ai(text: str, group_id: str) -> Optional[str]:
     action = result.action
 
     if action == "unknown":
-        return None
+        return await chat_with_ai(text)
 
     if action == "help":
         return HELP_TEXT
