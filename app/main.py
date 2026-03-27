@@ -96,16 +96,19 @@ async def test_ai() -> JSONResponse:
             "error": "GEMINI_API_KEY is not set",
             "key_length": 0,
         })
-    result = await parse_with_ai("昨日のランチ1500円を田中が払った")
-    if result:
-        return JSONResponse({
-            "status": "ok",
-            "action": result.action,
-            "amount": result.amount,
-            "payer": result.payer,
-            "label": result.label,
-        })
-    return JSONResponse({"error": "AI parse returned None", "key_length": len(GEMINI_API_KEY)})
+    try:
+        result = await parse_with_ai("昨日のランチ1500円を田中が払った")
+        if result:
+            return JSONResponse({
+                "status": "ok",
+                "action": result.action,
+                "amount": result.amount,
+                "payer": result.payer,
+                "label": result.label,
+            })
+        return JSONResponse({"error": "AI parse returned None", "key_length": len(api_key)})
+    except Exception as e:
+        return JSONResponse({"error": str(e), "key_length": len(api_key)}, status_code=500)
 
 
 @app.post("/webhook")
