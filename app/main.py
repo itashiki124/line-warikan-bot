@@ -89,7 +89,8 @@ async def health() -> JSONResponse:
 @app.get("/test-ai")
 async def test_ai() -> JSONResponse:
     """AI パースの動作確認用エンドポイント"""
-    from app.ai_parser import parse_with_ai, _get_api_key
+    from app.ai_parser import _get_api_key, GEMINI_URL
+    import httpx as _httpx
     api_key = _get_api_key()
     if not api_key:
         return JSONResponse({
@@ -97,16 +98,22 @@ async def test_ai() -> JSONResponse:
             "key_length": 0,
         })
     try:
-        result = await parse_with_ai("昨日のランチ1500円を田中が払った")
-        if result:
-            return JSONResponse({
-                "status": "ok",
-                "action": result.action,
-                "amount": result.amount,
-                "payer": result.payer,
-                "label": result.label,
-            })
-        return JSONResponse({"error": "AI parse returned None", "key_length": len(api_key)})
+        # Gemini API を直接呼んで生レスポンスを返す
+        payload = {
+            "contents": [{"parts": [{"text": "こんにちは。1+1は？"}]}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 64},
+        }
+        async with _httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{GEMINI_URL}?key={api_key}",
+                json=payload,
+            )
+        return JSONResponse({
+            "gemini_status": resp.status_code,
+            "gemini_body": resp.text[:500],
+            "key_length": len(api_key),
+            "url": GEMINI_URL,
+        })
     except Exception as e:
         return JSONResponse({"error": str(e), "key_length": len(api_key)}, status_code=500)
 
