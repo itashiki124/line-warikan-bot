@@ -7,6 +7,7 @@ from app.warikan import (
     parse_warikan_message,
     parse_record_message,
     parse_member_message,
+    parse_natural_record_message,
     GroupSession,
 )
 from app.storage import (
@@ -36,6 +37,17 @@ HELP_TEXT = """\
 
 _PEOPLE_SET_PATTERN = re.compile(
     r"^(?:人数|にんずう|members?)\s*([0-9,，]+)\s*(?:人|にん|名)?$",
+    re.IGNORECASE,
+)
+
+_STATUS_PATTERN = re.compile(
+    r"^(?:今|いま)?(?:いくら|幾ら)\s*[？?]?$|"
+    r"^(?:合計|ごうけい|状況|現在の?状況|確認)\s*[はをが]?\s*[？?]?$",
+    re.IGNORECASE,
+)
+
+_SETTLE_PATTERN = re.compile(
+    r"(?:精算|清算|せいさん|settle)(?:して|しよう|する|お願い)?[！!]?",
     re.IGNORECASE,
 )
 
@@ -121,11 +133,15 @@ def _handle_regex(text: str, group_id: str) -> Optional[str]:
         set_people(group_id, people)
         return f"👤 人数を {people}人 にセットしました。"
 
-    # 精算
-    if t in ("精算", "せいさん", "settle", "合計", "ごうけい"):
+    # 精算・清算
+    if _SETTLE_PATTERN.search(t) or t in ("合計", "ごうけい"):
         return _do_settle(group_id)
 
-    # 記録
+    # 状況確認
+    if _STATUS_PATTERN.search(t):
+        return _format_status(group_id)
+
+    # 記録 (「記録 1500円 ランチ」形式)
     parsed_record = parse_record_message(t)
     if parsed_record:
         amount, label, payer = parsed_record
@@ -142,6 +158,14 @@ def _handle_regex(text: str, group_id: str) -> Optional[str]:
         if people <= 0:
             return "人数は1以上にしてください。"
         return _do_warikan(total, people)
+
+    # 自然言語の支払い記録 (「ランチ1500円」「田中がタクシー2500円払った」)
+    parsed_natural = parse_natural_record_message(t)
+    if parsed_natural:
+        amount, label, payer = parsed_natural
+        if amount <= 0:
+            return "金額は1以上にしてください。"
+        return _do_record(group_id, amount, label, payer)
 
     return None
 

@@ -202,9 +202,9 @@ _RECORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# メンバー設定: 「メンバー 田中 山田 鈴木」
+# メンバー設定: 「メンバー 田中 山田 鈴木」「メンバーは田中と山田と鈴木」
 _MEMBER_PATTERN = re.compile(
-    r"^(?:メンバー|めんばー|members?)\s+(.+)$",
+    r"^(?:メンバー|めんばー|members?)\s*[はをの]?\s*(.+)$",
     re.IGNORECASE,
 )
 
@@ -277,13 +277,45 @@ def parse_record_message(text: str) -> Optional[tuple[int, str, Optional[str]]]:
     return None
 
 
+# 「田中がランチ1500円払った」「タクシー代2500円ね」のような自然言語 (円は必須)
+_NATURAL_RECORD_PATTERN = re.compile(
+    r"^(?:(\S+?)[がは]\s*)?(.+?)([0-9,，]+)\s*(?:円|えん)",
+    re.IGNORECASE,
+)
+
+
+def parse_natural_record_message(text: str) -> Optional[tuple[int, str, Optional[str]]]:
+    """自然言語の支払い記録をパース。円を含むメッセージから金額・ラベル・支払者を抽出。
+
+    - 「ランチ1500円」→ (1500, "ランチ", None)
+    - 「タクシー代2500円ね」→ (2500, "タクシー代", None)
+    - 「田中がランチ1500円払った」→ (1500, "ランチ", "田中")
+    """
+    m = _NATURAL_RECORD_PATTERN.match(text.strip())
+    if not m:
+        return None
+
+    payer_raw = m.group(1)
+    label = m.group(2).strip() or "支払い"
+    amount = _clean_number(m.group(3))
+
+    if amount <= 0:
+        return None
+
+    payer: Optional[str] = None
+    if payer_raw and not _is_number_like(payer_raw):
+        payer = payer_raw
+
+    return amount, label, payer
+
+
 def parse_member_message(text: str) -> Optional[list[str]]:
     """「メンバー 田中 山田 鈴木」形式をパース。メンバーリストを返す。"""
     m = _MEMBER_PATTERN.match(text.strip())
     if m:
         raw = m.group(1)
-        # スペース、カンマ、全角カンマ、読点で分割
-        names = re.split(r"[,，、\s]+", raw.strip())
+        # スペース、カンマ、全角カンマ、読点、と、やで分割
+        names = re.split(r"[,，、\s]+|(?<=\w)と(?=\w)|(?<=\w)や(?=\w)", raw.strip())
         names = [n for n in names if n]
         if names:
             return names
