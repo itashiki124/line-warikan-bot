@@ -173,6 +173,7 @@ async def webhook(request: Request) -> JSONResponse:
 
         text: str = message.get("text", "")
         reply_token: str = event.get("replyToken", "")
+        sender_id: str = source.get("userId", "")
 
         # グループ/ルーム/個人チャット両対応
         group_id: str = (
@@ -189,7 +190,7 @@ async def webhook(request: Request) -> JSONResponse:
             _source_summary(source),
         )
         try:
-            response = await handle_text(text, group_id, liff_id=LIFF_ID)
+            response = await handle_text(text, group_id, sender_id=sender_id, liff_id=LIFF_ID)
         except Exception as e:
             logger.error("Failed to handle message: %s", e, exc_info=True)
             response = BotResponse("エラーが発生しました。もう一度お試しください。")

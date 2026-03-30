@@ -346,6 +346,16 @@ _AMOUNT_PAYER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_INCOMPLETE_RECORD_PATTERN = re.compile(
+    r"^(?:(\S+?)[がは]\s*)?(.+?)(?:を)?\s*(?:払った|支払った|出した|立て替えた|たてかえた)\s*$",
+    re.IGNORECASE,
+)
+
+_INCOMPLETE_RECORD_COMMAND_PATTERN = re.compile(
+    r"^(?:記録|きろく|add)\s+(.+)$",
+    re.IGNORECASE,
+)
+
 # 対象者の抽出: 「田中と山田で」「田中、山田の分」部分（金額の後にくる名前リスト）
 # 名前は非数字文字を含むことを要求
 _PARTICIPANTS_SUFFIX = re.compile(
@@ -389,6 +399,14 @@ def _extract_participants(text: str) -> Optional[list[str]]:
 class NaturalParseResult:
     """自然言語パースの結果"""
     amount: int
+    label: str
+    payer: Optional[str] = None
+    participants: Optional[list[str]] = None
+
+
+@dataclass
+class IncompleteRecordParseResult:
+    """未完成の支払い記録候補。足りない情報は確認フローで埋める。"""
     label: str
     payer: Optional[str] = None
     participants: Optional[list[str]] = None
@@ -482,6 +500,49 @@ def parse_natural_record_extended(text: str) -> Optional[NaturalParseResult]:
         return NaturalParseResult(kanji_amount, label_part, payer, participants)
 
     return None
+
+
+def parse_incomplete_record_message(text: str) -> Optional[IncompleteRecordParseResult]:
+    """支払いっぽいが金額が欠けている入力をパースする。"""
+    t = text.strip()
+    if not t:
+        return None
+
+    if _AMOUNT_PATTERN.search(t) or _parse_kanji_amount(t):
+        return None
+
+    t_clean = re.sub(r"(?:ね|よ|な|だよ|です|だ)\s*[！!。]?\s*$", "", t).strip()
+
+    participants = _extract_participants(t_clean)
+    if participants:
+        m_p = _PARTICIPANTS_SUFFIX.search(t_clean)
+        if m_p:
+            t_clean = t_clean[:m_p.start()].strip()
+
+    m = _INCOMPLETE_RECORD_PATTERN.match(t_clean)
+    if m:
+        payer_raw = m.group(1)
+        label = (m.group(2) or "支払い").strip() or "支払い"
+        if re.match(r"(?:メンバー|めんばー|members?|リセット|ヘルプ|精算)", label, re.IGNORECASE):
+            return None
+        payer = payer_raw if payer_raw and not _is_number_like(payer_raw) else None
+        return IncompleteRecordParseResult(label=label, payer=payer, participants=participants)
+
+    m = _INCOMPLETE_RECORD_COMMAND_PATTERN.match(t_clean)
+    if not m:
+        return None
+
+    raw = m.group(1).strip()
+    if not raw:
+        return IncompleteRecordParseResult(label="支払い")
+
+    tokens = re.split(r"\s+", raw)
+    if len(tokens) >= 2:
+        return IncompleteRecordParseResult(
+            label=" ".join(tokens[1:]).strip() or "支払い",
+            payer=tokens[0],
+        )
+    return IncompleteRecordParseResult(label=raw)
 
 
 def parse_member_message(text: str) -> Optional[list[str]]:

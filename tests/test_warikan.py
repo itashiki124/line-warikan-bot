@@ -265,10 +265,11 @@ class TestHandleTextRegex:
     @pytest.fixture(autouse=True)
     def _reset(self):
         """各テスト前にストレージをリセット"""
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
     @pytest.mark.asyncio
     async def test_help(self):
@@ -383,10 +384,11 @@ class TestFormatStatus:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
     def test_empty(self):
         from app.line_handler import _format_status
@@ -422,10 +424,11 @@ class TestRecordWizard:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
     @pytest.mark.asyncio
     async def test_start_wizard(self):
@@ -519,10 +522,11 @@ class TestWarikanWizard:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
     @pytest.mark.asyncio
     async def test_warikan_wizard_flow(self):
@@ -595,10 +599,11 @@ class TestLIFF:
     async def test_handle_text_with_liff_id(self):
         """liff_id指定時、レスポンスのQRにURIアクションが含まれる"""
         from app.line_handler import handle_text
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
         result = await handle_text("ヘルプ", "test-group", liff_id="test-liff-id")
         uri_items = [qr for qr in result.quick_replies if qr.uri]
@@ -701,10 +706,11 @@ class TestAutoMemberRegistration:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
     @pytest.mark.asyncio
     async def test_payer_auto_registered(self):
@@ -759,16 +765,16 @@ class TestTravelScenario:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from app.storage import _sessions, _people, _wizards
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
         _sessions.clear()
         _people.clear()
         _wizards.clear()
+        _pending_wizards.clear()
 
     @pytest.mark.asyncio
     async def test_full_travel_flow(self):
         """旅行中の一連の支払い→精算フロー"""
         from app.line_handler import handle_text
-        from app.storage import get_session, get_people
 
         # メンバー登録
         r = await handle_text("メンバーは田中と山田と鈴木", "trip")
@@ -812,6 +818,62 @@ class TestTravelScenario:
 
         r = await handle_text("計算して", "test-group")
         assert "精算" in r.text
+
+
+class TestIncompleteRecordFollowup:
+    @pytest.fixture(autouse=True)
+    def _reset(self):
+        from app.storage import _sessions, _people, _wizards, _pending_wizards
+        _sessions.clear()
+        _people.clear()
+        _wizards.clear()
+        _pending_wizards.clear()
+
+    @pytest.mark.asyncio
+    async def test_missing_amount_starts_followup(self):
+        from app.line_handler import handle_text
+        from app.storage import get_pending_wizard
+
+        result = await handle_text("田中がランチ払った", "test-group", sender_id="user-a")
+        assert "金額が見つかりません" in result.text
+        assert "さっき送った人向け" in result.text
+        assert get_pending_wizard("test-group", "user-a") is not None
+
+    @pytest.mark.asyncio
+    async def test_missing_amount_followup_records_payment(self):
+        from app.line_handler import handle_text
+        from app.storage import get_session
+
+        await handle_text("田中がランチ払った", "test-group", sender_id="user-a")
+        result = await handle_text("1500", "test-group", sender_id="user-a")
+
+        assert "記録" in result.text
+        session = get_session("test-group")
+        assert session.payments[0].amount == 1500
+        assert session.payments[0].payer == "田中"
+
+    @pytest.mark.asyncio
+    async def test_missing_payer_starts_followup_in_group_chat(self):
+        from app.line_handler import handle_text
+
+        result = await handle_text("ランチ1500円", "test-group", sender_id="user-a")
+        assert "誰が払ったか確認したい" in result.text
+        assert "支払った人の名前" in result.text
+
+    @pytest.mark.asyncio
+    async def test_followup_is_scoped_to_sender(self):
+        from app.line_handler import handle_text
+        from app.storage import get_pending_wizard, get_session
+
+        await handle_text("ランチ1500円", "test-group", sender_id="user-a")
+
+        other_result = await handle_text("今いくら？", "test-group", sender_id="user-b")
+        assert "まだ記録がありません" in other_result.text
+        assert get_pending_wizard("test-group", "user-a") is not None
+
+        result = await handle_text("田中", "test-group", sender_id="user-a")
+        assert "記録" in result.text
+        assert get_session("test-group").payments[0].payer == "田中"
 
 
 class TestStoragePersistence:

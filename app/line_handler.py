@@ -8,6 +8,7 @@ from app.warikan import (
     parse_warikan_message,
     parse_record_message,
     parse_member_message,
+    parse_incomplete_record_message,
     parse_natural_record_message,
     parse_natural_record_extended,
     GroupSession,
@@ -21,6 +22,9 @@ from app.storage import (
     get_wizard,
     set_wizard,
     clear_wizard,
+    get_pending_wizard,
+    set_pending_wizard,
+    clear_pending_wizard,
     WizardState,
 )
 from app.ai_parser import parse_with_ai, chat_with_ai, AIParseResult
@@ -261,6 +265,216 @@ def _resolve_member_names(names: Optional[list[str]], members: list[str]) -> Opt
             resolved.append(resolved_name)
             seen.add(resolved_name)
     return resolved or None
+
+
+def _build_qr_missing_amount() -> list[QuickReplyItem]:
+    return [
+        QuickReplyItem("💴 800", text="800"),
+        QuickReplyItem("💴 1500", text="1500"),
+        QuickReplyItem("💴 3000", text="3000"),
+        QuickReplyItem("❌ キャンセル", text="キャンセル"),
+    ]
+
+
+def _build_qr_missing_payer(group_id: str) -> list[QuickReplyItem]:
+    qrs: list[QuickReplyItem] = []
+    for name in _get_members(group_id)[:10]:
+        qrs.append(QuickReplyItem(f"👤 {name}", text=name))
+    qrs.append(QuickReplyItem("⏭️ スキップ", text="スキップ"))
+    qrs.append(QuickReplyItem("❌ キャンセル", text="キャンセル"))
+    return qrs
+
+
+def _followup_scope_note(group_id: str, actor_id: str) -> str:
+    if actor_id and actor_id != group_id:
+        return "\nこの確認は、さっき送った人向けです。"
+    return ""
+
+
+def _format_pending_record_summary(data: dict) -> str:
+    lines: list[str] = []
+    if data.get("label"):
+        lines.append(f"📝 項目: {data['label']}")
+    if data.get("amount"):
+        lines.append(f"💰 金額: {data['amount']:,}円")
+    if data.get("payer"):
+        lines.append(f"💳 支払者: {data['payer']}")
+    if data.get("participants"):
+        lines.append(f"👥 対象: {'、'.join(data['participants'])}")
+    return "\n".join(lines)
+
+
+def _prompt_pending_record_confirmation(
+    group_id: str, actor_id: str, wizard: WizardState,
+) -> BotResponse:
+    summary = _format_pending_record_summary(wizard.data)
+    summary_block = f"{summary}\n\n" if summary else ""
+    scope_note = _followup_scope_note(group_id, actor_id)
+
+    if wizard.step == "amount":
+        return BotResponse(
+            "⚠️ 金額が見つかりませんでした。\n"
+            f"{summary_block}"
+            "いくらだったか教えてください。\n"
+            "例: 1500"
+            f"{scope_note}",
+            _build_qr_missing_amount(),
+        )
+
+    if wizard.step == "payer":
+        return BotResponse(
+            "⚠️ 誰が払ったか確認したいです。\n"
+            f"{summary_block}"
+            "支払った人の名前を入力してください。\n"
+            "未指定のまま記録するなら「スキップ」。"
+            f"{scope_note}",
+            _build_qr_missing_payer(group_id),
+        )
+
+    return BotResponse(
+        "⚠️ 確認状態が壊れました。最初からやり直してください。",
+        _build_qr_main("", _get_members(group_id)),
+    )
+
+
+def _start_pending_record_confirmation(
+    group_id: str,
+    actor_id: str,
+    wizard: WizardState,
+) -> BotResponse:
+    set_pending_wizard(group_id, actor_id, wizard)
+    return _prompt_pending_record_confirmation(group_id, actor_id, wizard)
+
+
+def _finish_pending_record_confirmation(
+    group_id: str,
+    actor_id: str,
+    wizard: WizardState,
+    liff_id: str = "",
+) -> BotResponse:
+    clear_pending_wizard(group_id, actor_id)
+    amount = wizard.data["amount"]
+    label = wizard.data.get("label") or "支払い"
+    payer = wizard.data.get("payer")
+    participants = wizard.data.get("participants")
+    result_text = _do_record(group_id, amount, label, payer, participants)
+    return BotResponse(result_text, _build_qr_after_record(liff_id, _get_members(group_id)))
+
+
+def _is_invalid_payer_followup_input(text: str) -> bool:
+    t = text.strip()
+    if not t:
+        return True
+    if _parse_amount_input(t) is not None:
+        return True
+    if t in ("記録", "支払い記録", "割り勘", "ヘルプ", "リセット"):
+        return True
+    if _UNDO_PATTERN.match(t) or _HISTORY_PATTERN.match(t):
+        return True
+    if _STATUS_PATTERN.search(t) or _SETTLE_PATTERN.search(t):
+        return True
+    return False
+
+
+def _handle_pending_record_confirmation(
+    text: str,
+    group_id: str,
+    actor_id: str,
+    liff_id: str = "",
+) -> Optional[BotResponse]:
+    wizard = get_pending_wizard(group_id, actor_id)
+    if wizard is None:
+        return None
+
+    t = text.strip()
+    if t in ("キャンセル", "やめる", "cancel", "戻る"):
+        clear_pending_wizard(group_id, actor_id)
+        return BotResponse(
+            "❌ 確認をキャンセルしました。",
+            _build_qr_main(liff_id, _get_members(group_id)),
+        )
+
+    if wizard.wizard_type != "record_confirm":
+        clear_pending_wizard(group_id, actor_id)
+        return None
+
+    if wizard.step == "amount":
+        amount = _parse_amount_input(t)
+        if amount is None:
+            return BotResponse(
+                "⚠️ 金額を数字で入力してください。\n例: 1500",
+                _build_qr_missing_amount(),
+            )
+        wizard.data["amount"] = amount
+        if wizard.data.get("ask_payer") and not wizard.data.get("payer"):
+            wizard.step = "payer"
+            set_pending_wizard(group_id, actor_id, wizard)
+            return _prompt_pending_record_confirmation(group_id, actor_id, wizard)
+        return _finish_pending_record_confirmation(group_id, actor_id, wizard, liff_id)
+
+    if wizard.step == "payer":
+        if t in ("スキップ", "なし", "skip"):
+            wizard.data["payer"] = None
+            return _finish_pending_record_confirmation(group_id, actor_id, wizard, liff_id)
+
+        if _is_invalid_payer_followup_input(t):
+            return BotResponse(
+                "⚠️ 支払った人の名前を入力してください。\n未指定のまま記録するなら「スキップ」。",
+                _build_qr_missing_payer(group_id),
+            )
+
+        wizard.data["payer"] = t
+        return _finish_pending_record_confirmation(group_id, actor_id, wizard, liff_id)
+
+    clear_pending_wizard(group_id, actor_id)
+    return BotResponse(
+        "⚠️ 予期しないエラーです。最初からやり直してください。",
+        _build_qr_main(liff_id, _get_members(group_id)),
+    )
+
+
+def _should_confirm_missing_payer(group_id: str, actor_id: str) -> bool:
+    return bool(actor_id) and actor_id != group_id
+
+
+def _start_missing_amount_confirmation(
+    group_id: str,
+    actor_id: str,
+    label: str,
+    payer: Optional[str] = None,
+    participants: Optional[list[str]] = None,
+) -> BotResponse:
+    wizard = WizardState(
+        wizard_type="record_confirm",
+        step="amount",
+        data={
+            "label": label or "支払い",
+            "payer": payer,
+            "participants": participants,
+            "ask_payer": _should_confirm_missing_payer(group_id, actor_id) and not payer,
+        },
+    )
+    return _start_pending_record_confirmation(group_id, actor_id, wizard)
+
+
+def _start_missing_payer_confirmation(
+    group_id: str,
+    actor_id: str,
+    amount: int,
+    label: str,
+    participants: Optional[list[str]] = None,
+) -> BotResponse:
+    wizard = WizardState(
+        wizard_type="record_confirm",
+        step="payer",
+        data={
+            "amount": amount,
+            "label": label or "支払い",
+            "participants": participants,
+            "ask_payer": True,
+        },
+    )
+    return _start_pending_record_confirmation(group_id, actor_id, wizard)
 
 
 # ── ウィザード処理 ────────────────────────────
@@ -560,7 +774,7 @@ def _get_members(group_id: str) -> list[str]:
     return get_session(group_id).members
 
 
-def _handle_regex(text: str, group_id: str, liff_id: str = "") -> Optional[BotResponse]:
+def _handle_regex(text: str, group_id: str, actor_id: str = "", liff_id: str = "") -> Optional[BotResponse]:
     """正規表現ベースのパース。マッチしなければNoneを返す。"""
     t = text.strip()
 
@@ -630,6 +844,8 @@ def _handle_regex(text: str, group_id: str, liff_id: str = "") -> Optional[BotRe
         amount, label, payer = parsed_record
         if amount <= 0:
             return BotResponse("金額は1以上にしてください。")
+        if payer is None and _should_confirm_missing_payer(group_id, actor_id):
+            return _start_missing_payer_confirmation(group_id, actor_id, amount, label)
         return BotResponse(_do_record(group_id, amount, label, payer), _build_qr_after_record(liff_id, _get_members(group_id)))
 
     # 即時割り勘
@@ -647,9 +863,27 @@ def _handle_regex(text: str, group_id: str, liff_id: str = "") -> Optional[BotRe
     if parsed_ext:
         if parsed_ext.amount <= 0:
             return BotResponse("金額は1以上にしてください。")
+        if parsed_ext.payer is None and _should_confirm_missing_payer(group_id, actor_id):
+            return _start_missing_payer_confirmation(
+                group_id,
+                actor_id,
+                parsed_ext.amount,
+                parsed_ext.label,
+                parsed_ext.participants,
+            )
         return BotResponse(
             _do_record(group_id, parsed_ext.amount, parsed_ext.label, parsed_ext.payer, parsed_ext.participants),
             _build_qr_after_record(liff_id, _get_members(group_id)),
+        )
+
+    incomplete_record = parse_incomplete_record_message(t)
+    if incomplete_record:
+        return _start_missing_amount_confirmation(
+            group_id,
+            actor_id,
+            incomplete_record.label,
+            incomplete_record.payer,
+            incomplete_record.participants,
         )
 
     return None
@@ -789,36 +1023,47 @@ def _get_session_info(group_id: str) -> dict:
     }
 
 
-async def handle_text(text: str, group_id: str, liff_id: str = "") -> BotResponse:
+async def handle_text(
+    text: str,
+    group_id: str,
+    sender_id: str = "",
+    liff_id: str = "",
+) -> BotResponse:
     """テキストメッセージを解釈してBotResponseを返す"""
+    actor_id = sender_id or group_id
 
-    # 0. ウィザード進行中ならそちらを優先
+    # 0. 送信者ごとの確認フローが進行中ならそちらを優先
+    pending_result = _handle_pending_record_confirmation(text, group_id, actor_id, liff_id)
+    if pending_result is not None:
+        return pending_result
+
+    # 1. グループ全体のウィザード進行中ならそちらを優先
     wizard_result = _handle_wizard(text, group_id, liff_id)
     if wizard_result is not None:
         return wizard_result
 
-    # 1. まず正規表現ベースでパース（高速・確実）
-    regex_result = _handle_regex(text, group_id, liff_id)
+    # 2. まず正規表現ベースでパース（高速・確実）
+    regex_result = _handle_regex(text, group_id, actor_id, liff_id)
     if regex_result is not None:
         return regex_result
 
-    # 2. AIパースにフォールバック（セッション情報を渡す）
+    # 3. AIパースにフォールバック（セッション情報を渡す）
     session_info = _get_session_info(group_id)
     parse_result = await parse_with_ai(text, session_info=session_info)
 
-    # 2a. AIエラー → ヘルプ誘導
+    # 3a. AIエラー → ヘルプ誘導
     if parse_result is None:
         return BotResponse(HELP_TEXT, _build_qr_main(liff_id, _get_members(group_id)))
 
-    # 2b. 割り勘アクションと判断 → 処理
+    # 3b. 割り勘アクションと判断 → 処理
     warikan_result = _process_ai_result(parse_result, group_id, liff_id)
     if warikan_result is not None:
         return warikan_result
 
-    # 2c. 割り勘と関係ない（unknown）→ AI会話応答
+    # 3c. 割り勘と関係ない（unknown）→ AI会話応答
     chat_response = await chat_with_ai(text, session_info=session_info)
     if chat_response:
         return BotResponse(chat_response, _build_qr_main(liff_id, _get_members(group_id)))
 
-    # 2d. チャットもエラー → ヘルプ誘導
+    # 3d. チャットもエラー → ヘルプ誘導
     return BotResponse(HELP_TEXT, _build_qr_main(liff_id, _get_members(group_id)))
