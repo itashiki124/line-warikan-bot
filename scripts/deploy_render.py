@@ -6,9 +6,16 @@
 ブラウザが開くので、まず Render にログインしてください。
 ログイン完了後、自動でサービス作成を行います。
 """
-import sys
+import importlib
 import time
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+
+def _load_sync_playwright():
+    try:
+        module = importlib.import_module("playwright.sync_api")
+        return getattr(module, "sync_playwright")
+    except ImportError:  # pragma: no cover - CLI helper only
+        return None
 
 
 REPO_NAME = "itashiki124/line-warikan-bot"
@@ -190,6 +197,12 @@ def create_web_service(page):
 
 
 def main():
+    sync_playwright = _load_sync_playwright()
+    if sync_playwright is None:
+        raise SystemExit(
+            "playwright がインストールされていません。`pip install playwright && python3 -m playwright install chromium` を実行してください。"
+        )
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         context = browser.new_context()

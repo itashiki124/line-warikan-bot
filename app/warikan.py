@@ -46,6 +46,16 @@ class GroupSession:
             amount=amount, label=label, payer=payer, participants=participants,
         ))
 
+    def pop_last_payment(self) -> Optional[Payment]:
+        if not self.payments:
+            return None
+        return self.payments.pop()
+
+    def recent_payments(self, limit: int = 5) -> list[Payment]:
+        if limit <= 0:
+            return []
+        return self.payments[-limit:]
+
     def total(self) -> int:
         return sum(p.amount for p in self.payments)
 

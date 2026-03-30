@@ -1,13 +1,26 @@
 """既存の Render サービスにデプロイをトリガーする"""
-import sys
+import importlib
 import time
-from playwright.sync_api import sync_playwright
+
+
+def _load_sync_playwright():
+    try:
+        module = importlib.import_module("playwright.sync_api")
+        return getattr(module, "sync_playwright")
+    except ImportError:  # pragma: no cover - CLI helper only
+        return None
 
 
 SERVICE_URL = "https://dashboard.render.com/web/srv-d72ih5n5r7bs7386dl9g"
 
 
 def main():
+    sync_playwright = _load_sync_playwright()
+    if sync_playwright is None:
+        raise SystemExit(
+            "playwright がインストールされていません。`pip install playwright && python3 -m playwright install chromium` を実行してください。"
+        )
+
     with sync_playwright() as p:
         # ユーザーデータディレクトリを使って既存のセッションを保持
         browser = p.chromium.launch(headless=False)

@@ -308,6 +308,28 @@ class TestHandleTextRegex:
         result = await handle_text("精算", "test-group")
         assert "精算結果" in result.text
 
+    @pytest.mark.asyncio
+    async def test_connectivity_ping(self):
+        from app.line_handler import handle_text
+        result = await handle_text("反応テスト", "test-group")
+        assert "反応しています" in result.text
+
+    @pytest.mark.asyncio
+    async def test_undo_last_record(self):
+        from app.line_handler import handle_text
+        await handle_text("田中がランチ1500円払った", "test-group")
+        result = await handle_text("取り消し", "test-group")
+        assert "取り消し" in result.text
+        assert "ランチ" in result.text
+
+    @pytest.mark.asyncio
+    async def test_history_command(self):
+        from app.line_handler import handle_text
+        await handle_text("田中がランチ1500円払った", "test-group")
+        result = await handle_text("履歴", "test-group")
+        assert "支払い履歴" in result.text
+        assert "ランチ" in result.text
+
 
 class TestCalculateSettlement:
     """calculate_settlement のテスト"""
@@ -382,6 +404,17 @@ class TestFormatStatus:
         assert "4,500円" in result
         assert "2件" in result
         assert "3人" in result
+
+    def test_status_compacts_long_history(self):
+        from app.line_handler import _format_status
+        from app.storage import get_session, set_people
+        set_people("test-group", 3)
+        session = get_session("test-group")
+        for i in range(7):
+            session.add_payment(1000 + i, f"支払い{i}", "田中")
+        result = _format_status("test-group")
+        assert "最近の支払い" in result
+        assert "ほか 2件" in result
 
 
 class TestRecordWizard:
@@ -707,6 +740,19 @@ class TestAutoMemberRegistration:
         session = get_session("test-group")
         assert session.members.count("田中") == 1
 
+    @pytest.mark.asyncio
+    async def test_honorific_name_resolved_to_existing_member(self):
+        """「田中さん」が既存の「田中」に正規化される"""
+        from app.line_handler import handle_text
+        from app.storage import get_session
+
+        session = get_session("test-group")
+        session.set_members(["田中", "山田"])
+
+        result = await handle_text("田中さんがランチ1500円払った", "test-group")
+        assert "田中" in result.text
+        assert "田中さん" not in get_session("test-group").members
+
 
 class TestTravelScenario:
     """旅行シナリオの統合テスト"""
@@ -766,3 +812,37 @@ class TestTravelScenario:
 
         r = await handle_text("計算して", "test-group")
         assert "精算" in r.text
+
+
+class TestStoragePersistence:
+    def test_save_and_reload(self, tmp_path, monkeypatch):
+        """支払い記録がストレージ再読み込み後も復元される"""
+        import importlib
+
+        monkeypatch.setenv("WARIKAN_ENABLE_PERSISTENCE", "1")
+        monkeypatch.setenv("WARIKAN_STORAGE_PATH", str(tmp_path / "warikan_store.json"))
+
+        import app.storage as storage
+
+        storage = importlib.reload(storage)
+        storage.reset_session("persist-group")
+
+        session = storage.get_session("persist-group")
+        session.set_members(["田中", "山田"])
+        session.add_payment(2400, "ランチ", "田中", ["田中", "山田"])
+        storage.set_people("persist-group", 2)
+        storage.persist_state()
+
+        storage._sessions.clear()
+        storage._people.clear()
+        storage._wizards.clear()
+
+        storage = importlib.reload(storage)
+        loaded = storage.get_session("persist-group")
+
+        assert loaded.members == ["田中", "山田"]
+        assert len(loaded.payments) == 1
+        assert loaded.payments[0].label == "ランチ"
+        assert loaded.payments[0].payer == "田中"
+        assert loaded.payments[0].participants == ["田中", "山田"]
+        assert storage.get_people("persist-group") == 2

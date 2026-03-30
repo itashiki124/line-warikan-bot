@@ -17,6 +17,7 @@ from app.storage import (
     reset_session,
     get_people,
     set_people,
+    persist_state,
     get_wizard,
     set_wizard,
     clear_wizard,
@@ -89,6 +90,7 @@ def _build_qr_main(liff_id: str = "", members: Optional[list] = None) -> list[Qu
             QuickReplyItem("💴 割り勘計算", uri=_liff_url("warikan_form.html", liff_id)),
             QuickReplyItem("👥 メンバー登録", uri=_liff_url("members_form.html", liff_id, members=mp)),
             QuickReplyItem("📋 状況確認", text="今いくら？"),
+            QuickReplyItem("📜 履歴", text="履歴"),
             QuickReplyItem("💸 精算", text="精算して"),
             QuickReplyItem("❓ ヘルプ", text="ヘルプ"),
         ]
@@ -97,6 +99,7 @@ def _build_qr_main(liff_id: str = "", members: Optional[list] = None) -> list[Qu
         QuickReplyItem("💴 割り勘計算", text="割り勘"),
         QuickReplyItem("👥 メンバー登録", text="メンバー登録"),
         QuickReplyItem("📋 状況確認", text="今いくら？"),
+        QuickReplyItem("📜 履歴", text="履歴"),
         QuickReplyItem("💸 精算", text="精算して"),
         QuickReplyItem("❓ ヘルプ", text="ヘルプ"),
     ]
@@ -107,11 +110,13 @@ def _build_qr_after_record(liff_id: str = "", members: Optional[list] = None) ->
     if liff_id:
         mp = ",".join(members)
         return [
+            QuickReplyItem("↩️ 取り消し", text="取り消し"),
             QuickReplyItem("➕ もう1件記録", uri=_liff_url("record_form.html", liff_id, members=mp)),
             QuickReplyItem("📋 状況確認", text="今いくら？"),
             QuickReplyItem("💸 精算", text="精算して"),
         ]
     return [
+        QuickReplyItem("↩️ 取り消し", text="取り消し"),
         QuickReplyItem("➕ もう1件記録", text="記録"),
         QuickReplyItem("📋 状況確認", text="今いくら？"),
         QuickReplyItem("💸 精算", text="精算して"),
@@ -138,11 +143,13 @@ def _build_qr_status(liff_id: str = "", members: Optional[list] = None) -> list[
         mp = ",".join(members)
         return [
             QuickReplyItem("💰 支払い記録", uri=_liff_url("record_form.html", liff_id, members=mp)),
+            QuickReplyItem("📜 履歴", text="履歴"),
             QuickReplyItem("💸 精算", text="精算して"),
             QuickReplyItem("🗑️ リセット", text="リセット"),
         ]
     return [
         QuickReplyItem("💰 支払い記録", text="記録"),
+        QuickReplyItem("📜 履歴", text="履歴"),
         QuickReplyItem("💸 精算", text="精算して"),
         QuickReplyItem("🗑️ リセット", text="リセット"),
     ]
@@ -180,9 +187,25 @@ HELP_TEXT = """\
 【精算】旅行の最後に！
   「精算して」→ 誰が誰にいくら払うか計算
 
+【やり直し・確認】
+    「取り消し」→ 直前の1件を取り消し
+    「履歴」→ 最近の記録を確認
+
 【その他】
-  今いくら？ / リセット / ヘルプ
+    今いくら？ / リセット / ヘルプ
 """
+
+_UNDO_PATTERN = re.compile(
+        r"^(?:取り消し|取消し|取消|とりけし|undo|戻す|ひとつ戻す|一つ戻す|やっぱり消して)[！!]?$",
+        re.IGNORECASE,
+)
+
+_HISTORY_PATTERN = re.compile(
+        r"^(?:履歴|りれき|history|最近の(?:記録|支払い)|直近(?:の(?:記録|支払い))?)(?:見せて|みせて|確認)?[！!]?$",
+        re.IGNORECASE,
+)
+
+_NAME_SUFFIX_PATTERN = re.compile(r"(?:さん|ちゃん|くん|君|様|氏)$")
 
 _PEOPLE_SET_PATTERN = re.compile(
     r"^(?:人数|にんずう|members?)\s*([0-9,，]+)\s*(?:人|にん|名)?$",
@@ -208,6 +231,36 @@ _AMOUNT_PATTERN = re.compile(
 # ── よく使う項目のプリセット ──────────────────────
 
 _COMMON_LABELS = ["ランチ", "ディナー", "飲み会", "タクシー", "コンビニ", "カフェ"]
+
+
+def _normalize_person_name(name: str) -> str:
+    cleaned = re.sub(r"\s+", "", name or "")
+    cleaned = re.sub(r"[、,，。．!！?？]+$", "", cleaned)
+    cleaned = _NAME_SUFFIX_PATTERN.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _resolve_member_name(name: str, members: list[str]) -> str:
+    normalized = _normalize_person_name(name)
+    if not normalized:
+        return ""
+    for member in members:
+        if _normalize_person_name(member) == normalized:
+            return member
+    return normalized
+
+
+def _resolve_member_names(names: Optional[list[str]], members: list[str]) -> Optional[list[str]]:
+    if not names:
+        return None
+    resolved: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        resolved_name = _resolve_member_name(name, members)
+        if resolved_name and resolved_name not in seen:
+            resolved.append(resolved_name)
+            seen.add(resolved_name)
+    return resolved or None
 
 
 # ── ウィザード処理 ────────────────────────────
@@ -432,13 +485,17 @@ def _format_status(group_id: str) -> str:
         lines.append(f"👤 人数: {people}人")
 
     if session.payments:
-        lines.append(f"\n【支払い一覧】({len(session.payments)}件)")
-        for i, p in enumerate(session.payments, 1):
+        display_limit = 5
+        recent = list(reversed(session.recent_payments(display_limit)))
+        lines.append(f"\n【最近の支払い】(全{len(session.payments)}件)")
+        for p in recent:
             payer_str = f" ({p.payer})" if p.payer else ""
             part_str = ""
             if p.participants:
                 part_str = f" [{','.join(p.participants)}]"
-            lines.append(f"  {i}. {p.label}: {p.amount:,}円{payer_str}{part_str}")
+            lines.append(f"  - {p.label}: {p.amount:,}円{payer_str}{part_str}")
+        if len(session.payments) > display_limit:
+            lines.append(f"  ...ほか {len(session.payments) - display_limit}件")
         lines.append(f"\n💰 合計: {session.total():,}円")
         if people:
             per_person = session.total() // people
@@ -464,6 +521,39 @@ def _append_status(response: str, group_id: str) -> str:
     return response + status
 
 
+def _format_history(group_id: str, limit: int = 10) -> str:
+    """最近の支払い履歴を新しい順で表示する"""
+    session = get_session(group_id)
+    if not session.payments:
+        return "📜 まだ記録がありません。"
+
+    recent = list(reversed(session.recent_payments(limit)))
+    lines = [f"📜 支払い履歴（新しい順 / 全{len(session.payments)}件）"]
+    for i, p in enumerate(recent, 1):
+        payer_str = f" ({p.payer})" if p.payer else ""
+        part_str = f" [{','.join(p.participants)}]" if p.participants else ""
+        lines.append(f"  {i}. {p.label}: {p.amount:,}円{payer_str}{part_str}")
+    if len(session.payments) > limit:
+        lines.append(f"  ...ほか {len(session.payments) - limit}件")
+    return "\n".join(lines)
+
+
+def _undo_last_record(group_id: str, liff_id: str = "") -> BotResponse:
+    """直前の支払い記録を1件取り消す"""
+    session = get_session(group_id)
+    removed = session.pop_last_payment()
+    if removed is None:
+        return BotResponse("↩️ 取り消せる記録がありません。", _build_qr_main(liff_id, _get_members(group_id)))
+
+    persist_state()
+    payer_str = f" ({removed.payer})" if removed.payer else ""
+    part_str = f"\n👥 対象: {'、'.join(removed.participants)}" if removed.participants else ""
+    text = _append_status(f"↩️ 取り消し: {removed.label} {removed.amount:,}円{payer_str}{part_str}", group_id)
+    if session.payments:
+        return BotResponse(text, _build_qr_after_record(liff_id, _get_members(group_id)))
+    return BotResponse(text, _build_qr_main(liff_id, _get_members(group_id)))
+
+
 
 def _get_members(group_id: str) -> list[str]:
     """group_id から現在のメンバーリストを取得する"""
@@ -473,6 +563,19 @@ def _get_members(group_id: str) -> list[str]:
 def _handle_regex(text: str, group_id: str, liff_id: str = "") -> Optional[BotResponse]:
     """正規表現ベースのパース。マッチしなければNoneを返す。"""
     t = text.strip()
+
+    # 疎通確認
+    if t.lower() in ("ping", "pong") or t in ("反応テスト", "疎通確認", "生きてる？"):
+        return BotResponse(
+            "✅ 反応しています。\n支払いは「田中がランチ1500円払った」みたいに送ってください。",
+            _build_qr_main(liff_id, _get_members(group_id)),
+        )
+
+    if _UNDO_PATTERN.match(t):
+        return _undo_last_record(group_id, liff_id)
+
+    if _HISTORY_PATTERN.match(t):
+        return BotResponse(_format_history(group_id), _build_qr_status(liff_id, _get_members(group_id)))
 
     # ウィザード開始トリガー
     if t in ("記録", "支払い記録", "記録する"):
@@ -496,6 +599,7 @@ def _handle_regex(text: str, group_id: str, liff_id: str = "") -> Optional[BotRe
         session = get_session(group_id)
         session.set_members(parsed_members)
         set_people(group_id, len(parsed_members))
+        persist_state()
         names_str = "、".join(parsed_members)
         return BotResponse(
             f"👥 メンバーを登録しました ({len(parsed_members)}人):\n"
@@ -570,6 +674,9 @@ def _do_record(
     """支払い記録。支払者/対象者を自動的にメンバーに追加する。"""
     session = get_session(group_id)
 
+    payer = _resolve_member_name(payer, session.members) if payer else None
+    participants = _resolve_member_names(participants, session.members)
+
     # 支払者・対象者を自動メンバー登録
     new_names: list[str] = []
     all_names = []
@@ -585,6 +692,7 @@ def _do_record(
         set_people(group_id, len(session.members))
 
     session.add_payment(amount, label, payer, participants)
+    persist_state()
     payer_str = f" ({payer})" if payer else ""
     part_str = ""
     if participants:
@@ -643,6 +751,7 @@ def _process_ai_result(result: AIParseResult, group_id: str, liff_id: str = "") 
         session = get_session(group_id)
         session.set_members(result.names)
         set_people(group_id, len(result.names))
+        persist_state()
         names_str = "、".join(result.names)
         return BotResponse(
             f"👥 メンバーを登録しました ({len(result.names)}人):\n"

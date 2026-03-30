@@ -94,14 +94,30 @@ def _get_reply_target(source: dict) -> str:
     )
 
 
+def _source_summary(source: dict) -> str:
+    """Webhook source をログ出力しやすい短い文字列にする。"""
+    source_type = source.get("type", "unknown")
+    group_id = source.get("groupId")
+    room_id = source.get("roomId")
+    user_id = source.get("userId")
+    return (
+        f"type={source_type} "
+        f"group={'yes' if group_id else 'no'} "
+        f"room={'yes' if room_id else 'no'} "
+        f"user={'yes' if user_id else 'no'}"
+    )
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     from app.ai_parser import _get_api_key
+    from app.storage import _persistence_enabled
     return JSONResponse({
         "status": "ok",
         "python": sys.version,
         "ai_enabled": bool(_get_api_key()),
         "liff_enabled": bool(LIFF_ID),
+        "persistence_enabled": _persistence_enabled(),
     })
 
 
@@ -141,24 +157,37 @@ async def webhook(request: Request) -> JSONResponse:
     logger.info("Webhook received: %d events", len(data.get("events", [])))
 
     for event in data.get("events", []):
-        if event.get("type") != "message":
+        event_type = event.get("type")
+        source = event.get("source", {})
+        logger.info("Webhook event: type=%s source=(%s)", event_type, _source_summary(source))
+
+        if event_type != "message":
+            logger.info("Skipping non-message event: %s", event_type)
             continue
+
         message = event.get("message", {})
-        if message.get("type") != "text":
+        message_type = message.get("type")
+        if message_type != "text":
+            logger.info("Skipping non-text message: %s source=(%s)", message_type, _source_summary(source))
             continue
 
         text: str = message.get("text", "")
         reply_token: str = event.get("replyToken", "")
 
         # グループ/ルーム/個人チャット両対応
-        source = event.get("source", {})
         group_id: str = (
             source.get("groupId")
             or source.get("roomId")
             or source.get("userId", "default")
         )
 
-        logger.info("Processing message: %r from group %s", text, group_id)
+        logger.info(
+            "Processing message: %r conversation=%s reply_token=%s source=(%s)",
+            text,
+            group_id,
+            "yes" if reply_token else "no",
+            _source_summary(source),
+        )
         try:
             response = await handle_text(text, group_id, liff_id=LIFF_ID)
         except Exception as e:
