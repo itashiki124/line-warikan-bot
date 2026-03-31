@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>メンバー登録</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
+    background: #f5f5f5;
+    color: #333;
+    padding: 16px;
+  }
+  h1 {
+    font-size: 20px;
+    text-align: center;
+    margin-bottom: 20px;
+    color: #06C755;
+  }
+  .form-group {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #666;
+    margin-bottom: 6px;
+  }
+  .member-list {
+    list-style: none;
+    padding: 0;
+  }
+  .member-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .member-list input {
+    flex: 1;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 16px;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .member-list input:focus {
+    outline: none;
+    border-color: #06C755;
+    box-shadow: 0 0 0 2px rgba(6,199,85,0.2);
+  }
+  .btn-remove {
+    width: 36px;
+    height: 36px;
+    border: none;
+    background: #f0f0f0;
+    border-radius: 50%;
+    font-size: 18px;
+    color: #999;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .btn-remove:active { background: #e0e0e0; }
+  .btn-add {
+    width: 100%;
+    padding: 10px;
+    background: transparent;
+    border: 1px dashed #ccc;
+    border-radius: 8px;
+    font-size: 15px;
+    color: #06C755;
+    cursor: pointer;
+    margin-top: 4px;
+  }
+  .btn-add:active { background: #f0f0f0; }
+  .btn-submit {
+    width: 100%;
+    padding: 14px;
+    background: #06C755;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: opacity 0.15s;
+  }
+  .btn-submit:active { opacity: 0.8; }
+  .btn-submit:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+  }
+  .btn-cancel {
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    color: #999;
+    border: none;
+    font-size: 15px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .hidden { display: none; }
+  #loading {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+  }
+  .error-msg {
+    color: #e74c3c;
+    font-size: 13px;
+    margin-top: 4px;
+    display: none;
+  }
+  .hint {
+    font-size: 12px;
+    color: #999;
+    margin-top: 8px;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">読み込み中...</div>
+
+<div id="form-container" class="hidden">
+  <h1>👥 メンバー登録</h1>
+
+  <div class="form-group">
+    <label>メンバー名</label>
+    <ul class="member-list" id="member-list"></ul>
+    <button class="btn-add" onclick="addMember()">＋ メンバーを追加</button>
+    <div class="error-msg" id="members-error">メンバーを2人以上入力してください</div>
+    <div class="hint">割り勘の精算に使います</div>
+  </div>
+
+  <button class="btn-submit" id="btn-submit" onclick="submitForm()">登録する</button>
+  <button class="btn-cancel" onclick="cancelForm()">キャンセル</button>
+</div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+  let memberCount = 0;
+
+  function getQueryParam(name) {
+    const params = new URLSearchParams(location.search);
+    return params.get(name) || '';
+  }
+
+  function addMember(name) {
+    memberCount++;
+    const li = document.createElement('li');
+    li.id = 'member-' + memberCount;
+    const idx = memberCount;
+    li.innerHTML =
+      '<input type="text" placeholder="名前" value="' + (name || '') + '" data-member="true">' +
+      '<button class="btn-remove" onclick="removeMember(' + idx + ')">×</button>';
+    document.getElementById('member-list').appendChild(li);
+
+    // 新しいフィールドにフォーカス
+    if (!name) {
+      li.querySelector('input').focus();
+    }
+  }
+
+  function removeMember(idx) {
+    const el = document.getElementById('member-' + idx);
+    if (el) el.remove();
+  }
+
+  function getMembers() {
+    const inputs = document.querySelectorAll('[data-member]');
+    const names = [];
+    inputs.forEach(input => {
+      const name = input.value.trim();
+      if (name) names.push(name);
+    });
+    return names;
+  }
+
+  async function submitForm() {
+    const members = getMembers();
+    const errorEl = document.getElementById('members-error');
+
+    if (members.length < 2) {
+      errorEl.style.display = 'block';
+      return;
+    }
+    errorEl.style.display = 'none';
+
+    const msg = 'メンバーは' + members.join('と');
+
+    const btn = document.getElementById('btn-submit');
+    btn.disabled = true;
+    btn.textContent = '送信中...';
+
+    try {
+      await liff.sendMessages([{ type: 'text', text: msg }]);
+      liff.closeWindow();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '登録する';
+      alert('送信に失敗しました。もう一度お試しください。');
+    }
+  }
+
+  function cancelForm() {
+    liff.closeWindow();
+  }
+
+  async function init() {
+    const liffId = getQueryParam('liffId');
+    if (!liffId) {
+      document.getElementById('loading').textContent = 'LIFF IDが設定されていません';
+      return;
+    }
+
+    try {
+      await liff.init({ liffId });
+    } catch (e) {
+      document.getElementById('loading').textContent = 'LIFF初期化エラー';
+      return;
+    }
+
+    if (!liff.isInClient()) {
+      document.getElementById('loading').textContent = 'LINEアプリから開いてください';
+      return;
+    }
+
+    // 既存メンバーをクエリパラメータから取得
+    const membersParam = getQueryParam('members');
+    if (membersParam) {
+      membersParam.split(',').filter(m => m).forEach(name => addMember(name));
+    }
+
+    // 最低2枠
+    while (document.querySelectorAll('[data-member]').length < 2) {
+      addMember();
+    }
+
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('form-container').classList.remove('hidden');
+  }
+
+  init();
+</script>
+</body>
+</html>

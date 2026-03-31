@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>支払い記録</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
+    background: #f5f5f5;
+    color: #333;
+    padding: 16px;
+  }
+  h1 {
+    font-size: 20px;
+    text-align: center;
+    margin-bottom: 20px;
+    color: #06C755;
+  }
+  .form-group {
+    background: #fff;
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #666;
+    margin-bottom: 6px;
+  }
+  input, select {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 16px;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: #06C755;
+    box-shadow: 0 0 0 2px rgba(6,199,85,0.2);
+  }
+  input[type="number"] { font-variant-numeric: tabular-nums; }
+  .chip-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .chip {
+    display: inline-block;
+    padding: 6px 14px;
+    border: 1px solid #ddd;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+    background: #fff;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .chip.selected {
+    background: #06C755;
+    color: #fff;
+    border-color: #06C755;
+  }
+  .chip:active { transform: scale(0.95); }
+  .member-chips .chip.selected {
+    background: #4A90D9;
+    border-color: #4A90D9;
+  }
+  .btn-submit {
+    width: 100%;
+    padding: 14px;
+    background: #06C755;
+    color: #fff;
+    border: none;
+    border-radius: 12px;
+    font-size: 17px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 8px;
+    transition: opacity 0.15s;
+  }
+  .btn-submit:active { opacity: 0.8; }
+  .btn-submit:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+  }
+  .btn-cancel {
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    color: #999;
+    border: none;
+    font-size: 15px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  .hidden { display: none; }
+  #loading {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+  }
+  .error-msg {
+    color: #e74c3c;
+    font-size: 13px;
+    margin-top: 4px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">読み込み中...</div>
+
+<div id="form-container" class="hidden">
+  <h1>💰 支払い記録</h1>
+
+  <div class="form-group">
+    <label for="amount">金額（円）</label>
+    <input type="number" id="amount" placeholder="例: 1500" min="1" inputmode="numeric" required>
+    <div class="error-msg" id="amount-error">金額を入力してください</div>
+  </div>
+
+  <div class="form-group">
+    <label>項目</label>
+    <div class="chip-group" id="label-chips"></div>
+    <input type="text" id="label" placeholder="または自由入力" style="margin-top: 8px;">
+  </div>
+
+  <div class="form-group">
+    <label for="payer">支払者</label>
+    <div class="chip-group member-chips" id="payer-chips"></div>
+    <input type="text" id="payer" placeholder="名前を入力（空欄でもOK）" style="margin-top: 8px;">
+  </div>
+
+  <div class="form-group" id="participants-group">
+    <label>対象者（この支払いを割り勘する人）</label>
+    <div class="chip-group member-chips" id="participant-chips"></div>
+    <div style="margin-top: 6px; font-size: 12px; color: #999;">
+      未選択の場合は全員が対象になります
+    </div>
+  </div>
+
+  <button class="btn-submit" id="btn-submit" onclick="submitForm()">記録する</button>
+  <button class="btn-cancel" onclick="cancelForm()">キャンセル</button>
+</div>
+
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+  const COMMON_LABELS = ['ランチ', 'ディナー', '飲み会', 'タクシー', 'コンビニ', 'カフェ'];
+  let members = [];
+  let selectedLabel = '';
+  let selectedPayer = '';
+  let selectedParticipants = new Set();
+
+  function getQueryParam(name) {
+    const params = new URLSearchParams(location.search);
+    return params.get(name) || '';
+  }
+
+  function renderLabelChips() {
+    const container = document.getElementById('label-chips');
+    COMMON_LABELS.forEach(lb => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = lb;
+      chip.onclick = () => {
+        document.querySelectorAll('#label-chips .chip').forEach(c => c.classList.remove('selected'));
+        if (selectedLabel === lb) {
+          selectedLabel = '';
+        } else {
+          chip.classList.add('selected');
+          selectedLabel = lb;
+        }
+        document.getElementById('label').value = '';
+      };
+      container.appendChild(chip);
+    });
+  }
+
+  function renderMemberChips() {
+    if (members.length === 0) {
+      document.getElementById('participants-group').classList.add('hidden');
+      return;
+    }
+
+    // Payer chips
+    const payerContainer = document.getElementById('payer-chips');
+    members.forEach(name => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = name;
+      chip.onclick = () => {
+        document.querySelectorAll('#payer-chips .chip').forEach(c => c.classList.remove('selected'));
+        if (selectedPayer === name) {
+          selectedPayer = '';
+        } else {
+          chip.classList.add('selected');
+          selectedPayer = name;
+        }
+        document.getElementById('payer').value = '';
+      };
+      payerContainer.appendChild(chip);
+    });
+
+    // Participant chips
+    if (members.length >= 3) {
+      const partContainer = document.getElementById('participant-chips');
+      // "全員" chip
+      const allChip = document.createElement('span');
+      allChip.className = 'chip selected';
+      allChip.textContent = '全員';
+      allChip.id = 'chip-all';
+      allChip.onclick = () => {
+        selectedParticipants.clear();
+        document.querySelectorAll('#participant-chips .chip').forEach(c => c.classList.remove('selected'));
+        allChip.classList.add('selected');
+      };
+      partContainer.appendChild(allChip);
+
+      members.forEach(name => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = name;
+        chip.onclick = () => {
+          document.getElementById('chip-all').classList.remove('selected');
+          if (selectedParticipants.has(name)) {
+            selectedParticipants.delete(name);
+            chip.classList.remove('selected');
+            if (selectedParticipants.size === 0) {
+              document.getElementById('chip-all').classList.add('selected');
+            }
+          } else {
+            selectedParticipants.add(name);
+            chip.classList.add('selected');
+          }
+        };
+        partContainer.appendChild(chip);
+      });
+    } else {
+      document.getElementById('participants-group').classList.add('hidden');
+    }
+  }
+
+  function getFormData() {
+    const amount = parseInt(document.getElementById('amount').value, 10);
+    const labelInput = document.getElementById('label').value.trim();
+    const label = labelInput || selectedLabel || '支払い';
+    const payerInput = document.getElementById('payer').value.trim();
+    const payer = payerInput || selectedPayer || '';
+    const participants = selectedParticipants.size > 0 ? Array.from(selectedParticipants) : null;
+    return { amount, label, payer, participants };
+  }
+
+  function buildMessage(data) {
+    let parts = [];
+    if (data.payer) {
+      parts.push(`${data.payer}が${data.label}${data.amount}円払った`);
+    } else {
+      parts.push(`${data.label} ${data.amount}円`);
+    }
+    if (data.participants && data.participants.length > 0) {
+      parts[0] += `、${data.participants.join('と')}で割り勘`;
+    }
+    return parts[0];
+  }
+
+  async function submitForm() {
+    const amountEl = document.getElementById('amount');
+    const errorEl = document.getElementById('amount-error');
+    const amount = parseInt(amountEl.value, 10);
+
+    if (!amount || amount <= 0) {
+      errorEl.style.display = 'block';
+      amountEl.focus();
+      return;
+    }
+    errorEl.style.display = 'none';
+
+    const data = getFormData();
+    const msg = buildMessage(data);
+
+    const btn = document.getElementById('btn-submit');
+    btn.disabled = true;
+    btn.textContent = '送信中...';
+
+    try {
+      await liff.sendMessages([{ type: 'text', text: msg }]);
+      liff.closeWindow();
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = '記録する';
+      alert('送信に失敗しました。もう一度お試しください。');
+    }
+  }
+
+  function cancelForm() {
+    liff.closeWindow();
+  }
+
+  async function init() {
+    const liffId = getQueryParam('liffId');
+    if (!liffId) {
+      document.getElementById('loading').textContent = 'LIFF IDが設定されていません';
+      return;
+    }
+
+    try {
+      await liff.init({ liffId });
+    } catch (e) {
+      document.getElementById('loading').textContent = 'LIFF初期化エラー';
+      return;
+    }
+
+    if (!liff.isInClient()) {
+      document.getElementById('loading').textContent = 'LINEアプリから開いてください';
+      return;
+    }
+
+    // メンバー情報をクエリパラメータから取得
+    const membersParam = getQueryParam('members');
+    if (membersParam) {
+      members = membersParam.split(',').filter(m => m);
+    }
+
+    renderLabelChips();
+    renderMemberChips();
+
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('form-container').classList.remove('hidden');
+
+    // 金額フィールドにフォーカス
+    document.getElementById('amount').focus();
+  }
+
+  init();
+</script>
+</body>
+</html>
